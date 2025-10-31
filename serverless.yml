@@ -1,0 +1,24 @@
+service: akq-bot-stub
+frameworkVersion: '4'
+
+provider:
+  name: aws
+  region: eu-central-1
+  stage: prod
+  environment:
+    SLACK_SIGNING_SECRET: ${ssm:/akq-bot/prod/SLACK_SIGNING_SECRET~true}
+    SLACK_BOT_TOKEN: ${ssm:/akq-bot/prod/SLACK_BOT_TOKEN~true}
+  ecr:
+    images:
+      slack-handler:
+        path: .
+
+functions:
+  slack:
+    image:
+      name: slack-handler
+    url:
+      authorizer: none
+      cors: true
+    memorySize: 256
+    timeout: 10
