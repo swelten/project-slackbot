@@ -275,6 +275,9 @@ app.event('message', async ({ event, client, logger }) => {
       session.answers.prefixedProjectName = notionResult.title;
       session.answers.projectCode = notionResult.prefix;
     }
+    if (notionResult?.channelSlug) {
+      session.answers.channelSlug = notionResult.channelSlug;
+    }
     const summary = QUESTION_FLOW.map(({ label, key }) => {
       const value =
         key === 'projectName'
@@ -291,6 +294,32 @@ app.event('message', async ({ event, client, logger }) => {
       '',
       followUp,
     ];
+
+    let projectChannelInfo;
+    try {
+      if (notionResult?.channelSlug) {
+        projectChannelInfo = await ensureProjectChannel({
+          client,
+          slug: notionResult.channelSlug,
+          userId: session.userId,
+          logger,
+        });
+      }
+    } catch (channelError) {
+      logger.error('Failed to ensure project channel', channelError);
+      messageLines.push(
+        '',
+        'Hinweis: Der Projekt-Channel konnte nicht erstellt werden. Bitte prüfe meine Slack-Berechtigungen (benötigt `channels:manage` und `channels:read`).',
+      );
+    }
+
+    if (projectChannelInfo?.id) {
+      const mention = `<#${projectChannelInfo.id}|${projectChannelInfo.name}>`;
+      const infoText = projectChannelInfo.created
+        ? `Ich habe den Channel ${mention} erstellt und dich hinzugefügt.`
+        : `Channel ${mention} existiert bereits; ich habe dich hinzugefügt (falls nötig).`;
+      messageLines.push('', infoText);
+    }
 
     if (notionResult?.unresolvedPeople?.length) {
       messageLines.push(
@@ -348,7 +377,9 @@ async function createNotionProject(answers) {
     resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
   ]);
 
-  const { prefixedTitle, prefix } = await buildPrefixedTitle(answers.projectName);
+  const { prefixedTitle, prefix, channelSlug, sanitizedBase } = await buildPrefixedTitle(
+    answers.projectName,
+  );
 
   const properties = {
     [NOTION_PROPERTIES.title]: {
@@ -388,6 +419,8 @@ async function createNotionProject(answers) {
     unresolvedPeople,
     title: prefixedTitle,
     prefix,
+    channelSlug,
+    sanitizedBase,
   };
 }
 
@@ -482,7 +515,7 @@ function formatNumber(value) {
 }
 
 async function buildPrefixedTitle(baseName) {
-  const trimmedBase = sanitizeTitle(stripExistingPrefix(baseName));
+  const sanitizedBase = sanitizeTitle(stripExistingPrefix(baseName));
   const yearSuffix = String(new Date().getFullYear()).slice(-2);
   const matcher = new RegExp(`^P[_-]?${yearSuffix}(\\d{3})`, 'i');
 
@@ -522,9 +555,10 @@ async function buildPrefixedTitle(baseName) {
   const nextSequence = maxSequence + 1;
   const sequenceStr = String(nextSequence).padStart(3, '0');
   const prefix = `P${yearSuffix}${sequenceStr}_`;
-  const prefixedTitle = `${prefix}${trimmedBase}`;
+  const prefixedTitle = `${prefix}${sanitizedBase}`;
+  const channelSlug = buildChannelSlug(sanitizedBase);
 
-  return { prefixedTitle, prefix, sequence: nextSequence };
+  return { prefixedTitle, prefix, sequence: nextSequence, channelSlug, sanitizedBase };
 }
 
 function stripExistingPrefix(name) {
@@ -532,11 +566,78 @@ function stripExistingPrefix(name) {
   if (!trimmed) {
     return 'Unbenanntes Projekt';
   }
-  return trimmed.replace(/^P[_-]?\d{2}\d{3}\s*/i, '').trim() || 'Unbenanntes Projekt';
+  const withoutPrefix = trimmed.replace(/^P[_-]?\d{5}[_\s-]*/i, '');
+  const normalized = withoutPrefix.replace(/^_+/, '').trim();
+  return normalized || 'Unbenanntes Projekt';
 }
 
 function sanitizeTitle(name) {
-  return name.replace(/\s+/g, '_');
+  const replaced = (name ?? '').replace(/\s+/g, '_');
+  const collapsed = replaced.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  return collapsed || 'Projekt';
+}
+
+function buildChannelSlug(sanitizedBase) {
+  const lower = (sanitizedBase ?? '').toLowerCase();
+  const cleaned = lower.replace(/[^a-z0-9_-]/g, '_');
+  const collapsed = cleaned.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+  const slug = collapsed || 'projekt';
+  return slug.slice(0, 60);
+}
+
+async function ensureProjectChannel({ client, slug, userId, logger }) {
+  const channelName = `prj_${slug}`;
+  try {
+    const createResult = await client.conversations.create({
+      name: channelName,
+      is_private: false,
+    });
+    const channelId = createResult.channel?.id;
+    if (channelId) {
+      await inviteUserToChannel(client, channelId, userId, logger);
+    }
+    return { id: channelId, name: channelName, created: true };
+  } catch (error) {
+    if (error.data?.error === 'name_taken') {
+      const existing = await findChannelByName(client, channelName);
+      if (existing?.id) {
+        await inviteUserToChannel(client, existing.id, userId, logger);
+        return { id: existing.id, name: channelName, created: false };
+      }
+    }
+    throw error;
+  }
+}
+
+async function findChannelByName(client, name) {
+  let cursor;
+  do {
+    const response = await client.conversations.list({
+      limit: 200,
+      cursor,
+      types: 'public_channel',
+    });
+    const match = response.channels?.find((channel) => channel.name === name);
+    if (match) {
+      return match;
+    }
+    cursor = response.response_metadata?.next_cursor;
+  } while (cursor);
+  return null;
+}
+
+async function inviteUserToChannel(client, channelId, userId, logger) {
+  try {
+    await client.conversations.invite({
+      channel: channelId,
+      users: userId,
+    });
+  } catch (error) {
+    const ignoredErrors = ['already_in_channel', 'cant_invite_self', 'not_in_channel'];
+    if (!ignoredErrors.includes(error.data?.error)) {
+      logger?.warn?.('Failed to invite user to channel', error);
+    }
+  }
 }
 
 async function resolvePersonProperty(rawValue, label, unresolvedPeople) {
