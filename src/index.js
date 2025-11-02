@@ -3,15 +3,30 @@ import { Client as NotionClient } from '@notionhq/client';
 
 const { App, AwsLambdaReceiver } = bolt;
 
-const PROJECT_TYPE_OPTIONS = ['Kundenprojekt', 'Forschungsprojekt', 'Internes Projekt'];
+const PROJECT_TYPE_OPTIONS = ['Kundenprojekte', 'Forschungsprojekt', 'Internes Projekt'];
+
+const PROJECT_TYPE_ALIASES = {
+  kundenprojekte: 'Kundenprojekte',
+  kundenprojekt: 'Kundenprojekte',
+  kunden: 'Kundenprojekte',
+  'kunden projekt': 'Kundenprojekte',
+  forschungsprojekt: 'Forschungsprojekt',
+  forschung: 'Forschungsprojekt',
+  forschungsprojekte: 'Forschungsprojekt',
+  'internes projekt': 'Internes Projekt',
+  intern: 'Internes Projekt',
+  'internes-projekt': 'Internes Projekt',
+  'internes': 'Internes Projekt',
+  'internesprojekt': 'Internes Projekt',
+};
 
 const NOTION_PROPERTIES = {
   title: 'Name',
   budget: 'Budget',
-  timeframe: 'Zeitraum (von bis)',
-  contentLead: 'Inhaltlich verantwortlich',
+  timeframe: 'Zeitraum',
+  contentLead: 'Inhaltlich',
   coordination: 'Koordination',
-  projectType: 'Art des Projekts',
+  projectType: 'Art',
 };
 
 const QUESTION_FLOW = [
@@ -25,11 +40,14 @@ const QUESTION_FLOW = [
     label: 'Budget',
     prompt: 'Welches Budget ist eingeplant? (Bitte als Zahl oder Zahl mit Währung angeben.)',
     normalize: (input) => {
-      const cleaned = input.replace(/\s+/g, ' ').trim();
-      if (!cleaned) {
-        return { ok: false, error: 'Ich konnte kein Budget erkennen. Versuche es bitte noch einmal.' };
+      const parsed = parseNumber(input);
+      if (parsed == null) {
+        return {
+          ok: false,
+          error: 'Ich konnte kein Budget erkennen. Bitte gib eine Zahl an (z. B. 500 oder 1.250,50).',
+        };
       }
-      return { ok: true, value: cleaned };
+      return { ok: true, value: parsed };
     },
   },
   {
@@ -72,19 +90,7 @@ const QUESTION_FLOW = [
     key: 'projectType',
     label: 'Art des Projekts',
     prompt: `Welche Art von Projekt ist es? (${PROJECT_TYPE_OPTIONS.join(', ')})`,
-    normalize: (input) => {
-      const cleaned = input.trim();
-      const match = PROJECT_TYPE_OPTIONS.find(
-        (option) => option.toLowerCase() === cleaned.toLowerCase(),
-      );
-      if (!match) {
-        return {
-          ok: false,
-          error: `Bitte wähle eine der Optionen: ${PROJECT_TYPE_OPTIONS.join(', ')}`,
-        };
-      }
-      return { ok: true, value: match };
-    },
+    normalize: (input) => normalizeProjectType(input),
   },
 ];
 
@@ -260,7 +266,8 @@ app.event('message', async ({ event, client, logger }) => {
     const notionResult = await createNotionProject(session.answers);
     const summary = QUESTION_FLOW.map(({ label, key }) => {
       const value = session.answers[key];
-      return `• ${label}: ${value}`;
+      const displayValue = typeof value === 'number' ? formatNumber(value) : value;
+      return `• ${label}: ${displayValue}`;
     }).join('\n');
     const followUp = notionResult?.url ?? 'Ich konnte keine Notion-Seite verlinken. Bitte prüfe die Logs für Details.';
 
@@ -323,8 +330,8 @@ async function createNotionProject(answers) {
   const unresolvedPeople = [];
 
   const [contentLeadPeople, coordinationPeople] = await Promise.all([
-    resolvePersonProperty(answers.contentLead, NOTION_PROPERTIES.contentLead, unresolvedPeople),
-    resolvePersonProperty(answers.coordination, NOTION_PROPERTIES.coordination, unresolvedPeople),
+    resolvePersonProperty(answers.contentLead, 'Inhaltlich verantwortlich', unresolvedPeople),
+    resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
   ]);
 
   const properties = {
@@ -336,11 +343,7 @@ async function createNotionProject(answers) {
       ],
     },
     [NOTION_PROPERTIES.budget]: {
-      rich_text: [
-        {
-          text: { content: answers.budget },
-        },
-      ],
+      number: answers.budget ?? null,
     },
     [NOTION_PROPERTIES.timeframe]: {
       date: {
@@ -387,6 +390,77 @@ function validateDate(input) {
     };
   }
   return { ok: true, value: cleaned };
+}
+
+function normalizeProjectType(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${PROJECT_TYPE_OPTIONS.join(', ')}`,
+    };
+  }
+
+  const key = cleaned.toLowerCase().replace(/\s+/g, ' ');
+  const canonical =
+    PROJECT_TYPE_ALIASES[key] ||
+    PROJECT_TYPE_OPTIONS.find((option) => option.toLowerCase() === key);
+
+  if (!canonical) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${PROJECT_TYPE_OPTIONS.join(', ')}`,
+    };
+  }
+
+  return { ok: true, value: canonical };
+}
+
+function parseNumber(rawValue) {
+  if (!rawValue) {
+    return null;
+  }
+
+  const compact = String(rawValue).replace(/\s+/g, '');
+  const numericChars = compact.replace(/[^0-9,.-]/g, '');
+  if (!numericChars) {
+    return null;
+  }
+
+  const lastComma = numericChars.lastIndexOf(',');
+  const lastDot = numericChars.lastIndexOf('.');
+
+  let normalized = numericChars;
+  if (lastComma > lastDot) {
+    // Treat comma as decimal separator, remove other punctuation.
+    normalized = numericChars
+      .replace(/\./g, '')
+      .replace(',', '.')
+      .replace(/(?!^)-/g, '')
+      .replace(/[^\d.-]/g, '');
+  } else if (lastDot !== -1) {
+    // Treat dot as decimal separator.
+    normalized = numericChars
+      .replace(/,/g, '')
+      .replace(/(?!^)-/g, '')
+      .replace(/[^\d.-]/g, '');
+  } else {
+    normalized = numericChars.replace(/(?!^)-/g, '').replace(/[^\d-]/g, '');
+  }
+
+  if (!normalized || normalized === '-' || normalized === '.' || normalized === '-.') {
+    return null;
+  }
+
+  const value = Number.parseFloat(normalized);
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat('de-DE', {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 async function resolvePersonProperty(rawValue, label, unresolvedPeople) {

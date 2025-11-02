@@ -59,12 +59,12 @@ Wichtig: Der Bot muss Mitglied des Channels sein. Falls du die Meldung erhältst
 
 Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-Namen siehe `NOTION_PROPERTIES` in `src/index.js`):
 
-- Projektname (Titel)
-- Budget (Text/Zahl)
-- Zeitraum Start & Ende (`YYYY-MM-DD`)
-- Inhaltlich verantwortlich (Person)
-- Koordination (Person)
-- Art des Projekts (`Kundenprojekt`, `Forschungsprojekt`, `Internes Projekt`)
+- `Name` (Titel)
+- `Budget` (Number)
+- `Zeitraum` (Date mit Start/Ende)
+- `Inhaltlich` (People)
+- `Koordination` (People)
+- `Art` (Select mit Optionen `Kundenprojekte`, `Forschungsprojekt`, `Internes Projekt`)
 
 Die Notion-Anbindung erstellt unmittelbar einen Eintrag in der Datenbank. Personen werden über den Namen aufgelöst (`notion.users.list`). Falls ein Name nicht eindeutig gefunden wird, informiert der Bot den Nutzer in der Abschlussnachricht und lässt das People-Feld leer.
 Tipp: Gib die Person genauso an, wie sie in Notion erscheint (oder nutze einen Slack-@Mention), sonst kann die Zuordnung fehlschlagen.
