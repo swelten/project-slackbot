@@ -179,9 +179,21 @@ app.command('/init', async ({ ack, command, respond, client, logger }) => {
   } catch (error) {
     logger.error('Failed to start onboarding session', error);
     sessionStore.delete(command.user_id);
+
+    let text =
+      'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.';
+
+    const slackError = error?.data?.error;
+    if (slackError === 'not_in_channel' || slackError === 'channel_not_found') {
+      text =
+        'Ich darf hier (noch) nicht schreiben. Bitte lade mich zuerst mit `/invite @akq-bot-stub` in diesen Channel ein und versuche es dann erneut.';
+    } else if (slackError === 'is_archived') {
+      text = 'Dieser Channel ist archiviert. Bitte nutze einen aktiven Channel.';
+    }
+
     await respond({
       response_type: 'ephemeral',
-      text: 'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.',
+      text,
     });
   }
 });

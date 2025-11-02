@@ -54,6 +54,7 @@ npx serverless info --verbose
 ## Conversation flow
 
 Running `/init` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort fragt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW` ab, speichert die Antworten, erstellt danach via `createNotionProject` den Datensatz in Notion und postet die Zusammenfassung (inklusive Link zur neuen Seite) zurück in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
+Wichtig: Der Bot muss Mitglied des Channels sein. Falls du die Meldung erhältst, dass er nicht posten darf, lade ihn mit `/invite @akq-bot-stub` ein und starte den Flow erneut.
 
 Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-Namen siehe `NOTION_PROPERTIES` in `src/index.js`):
 
