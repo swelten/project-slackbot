@@ -286,10 +286,20 @@ app.event('message', async ({ event, client, logger }) => {
     });
   } catch (error) {
     logger.error('Failed to create Notion project', error);
+
+    let message = 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.';
+    if (isWrongNotionDatabase(error)) {
+      message =
+        'Ich konnte die Notion-Datenbank nicht finden. Bitte prüfe, ob `NOTION_DATABASE_ID` korrekt ist und die Integration Zugriff auf die Datenbank hat.';
+    } else if (isDeniedNotionAccess(error)) {
+      message =
+        'Ich habe keinen Zugriff auf die Notion-Datenbank. Bitte teile die Datenbank mit meiner Integration und versuche es erneut.';
+    }
+
     await client.chat.postMessage({
       channel: session.channel,
       thread_ts: session.threadTs,
-      text: 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.',
+      text: message,
     });
   } finally {
     sessionStore.delete(session.userId);
@@ -434,6 +444,17 @@ async function listNotionUsers() {
 
   cachedNotionUsers = results;
   return cachedNotionUsers;
+}
+
+function isWrongNotionDatabase(error) {
+  const status = error?.status ?? error?.statusCode;
+  const code = error?.body?.code;
+  return status === 404 && code === 'object_not_found';
+}
+
+function isDeniedNotionAccess(error) {
+  const status = error?.status ?? error?.statusCode;
+  return status === 403;
 }
 
 function getStartErrorMessage(error) {
