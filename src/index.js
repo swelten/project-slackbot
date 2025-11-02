@@ -137,15 +137,6 @@ app.command('/init', async ({ ack, command, respond, client, logger }) => {
   try {
     const channel = command.channel_id;
 
-    try {
-      await client.conversations.join({ channel });
-    } catch (joinError) {
-      const knownErrors = ['method_not_supported_for_channel_type', 'already_in_channel', 'cant_join_own_dm_channel'];
-      if (!knownErrors.includes(joinError.data?.error)) {
-        throw joinError;
-      }
-    }
-
     const session = {
       userId: command.user_id,
       channel,
@@ -180,20 +171,9 @@ app.command('/init', async ({ ack, command, respond, client, logger }) => {
     logger.error('Failed to start onboarding session', error);
     sessionStore.delete(command.user_id);
 
-    let text =
-      'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.';
-
-    const slackError = error?.data?.error;
-    if (slackError === 'not_in_channel' || slackError === 'channel_not_found') {
-      text =
-        'Ich darf hier (noch) nicht schreiben. Bitte lade mich zuerst mit `/invite @akq-bot-stub` in diesen Channel ein und versuche es dann erneut.';
-    } else if (slackError === 'is_archived') {
-      text = 'Dieser Channel ist archiviert. Bitte nutze einen aktiven Channel.';
-    }
-
     await respond({
       response_type: 'ephemeral',
-      text,
+      text: getStartErrorMessage(error),
     });
   }
 });
@@ -454,6 +434,22 @@ async function listNotionUsers() {
 
   cachedNotionUsers = results;
   return cachedNotionUsers;
+}
+
+function getStartErrorMessage(error) {
+  const slackError = error?.data?.error;
+  switch (slackError) {
+    case 'not_in_channel':
+    case 'channel_not_found':
+    case 'missing_scope':
+      return 'Ich darf hier (noch) nicht schreiben. Bitte lade mich zuerst mit `/invite @akq-bot-stub` in diesen Channel ein und versuche es dann erneut.';
+    case 'is_archived':
+      return 'Dieser Channel ist archiviert. Bitte nutze einen aktiven Channel.';
+    case 'restricted_action':
+      return 'Ich habe nicht genug Berechtigungen für diesen Channel. Bitte prüfe meine Slack-Scopes oder lade mich direkt ein.';
+    default:
+      return 'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.';
+  }
 }
 
 export const handler = async (event, context, callback) => {
