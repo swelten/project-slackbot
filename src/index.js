@@ -34,6 +34,13 @@ const QUESTION_FLOW = [
     key: 'projectName',
     label: 'Projektname',
     prompt: 'Wie soll das Projekt heißen?',
+    normalize: (input) => {
+      const cleaned = input.trim();
+      if (!cleaned) {
+        return { ok: false, error: 'Ich brauche einen Projektnamen. Versuch es bitte noch einmal.' };
+      }
+      return { ok: true, value: cleaned };
+    },
   },
   {
     key: 'budget',
@@ -112,7 +119,7 @@ const notion =
 const notionDatabaseId = process.env.NOTION_DATABASE_ID?.trim().replace(/[^a-f0-9-]/gi, '');
 let cachedNotionUsers = null;
 
-app.command('/init', async ({ ack, command, respond, client, logger }) => {
+app.command('/newproject', async ({ ack, command, respond, client, logger }) => {
   await ack();
 
   if (QUESTION_FLOW.length === 0) {
@@ -230,7 +237,7 @@ app.event('message', async ({ event, client, logger }) => {
     await client.chat.postMessage({
       channel: session.channel,
       thread_ts: session.threadTs,
-      text: 'Alles klar, ich habe den Flow abgebrochen. Starte ihn jederzeit neu mit `/init`.',
+      text: 'Alles klar, ich habe den Flow abgebrochen. Starte ihn jederzeit neu mit `/newproject`.',
     });
     return;
   }
@@ -264,8 +271,15 @@ app.event('message', async ({ event, client, logger }) => {
 
   try {
     const notionResult = await createNotionProject(session.answers);
+    if (notionResult?.title) {
+      session.answers.prefixedProjectName = notionResult.title;
+      session.answers.projectCode = notionResult.prefix;
+    }
     const summary = QUESTION_FLOW.map(({ label, key }) => {
-      const value = session.answers[key];
+      const value =
+        key === 'projectName'
+          ? session.answers.prefixedProjectName ?? session.answers[key]
+          : session.answers[key];
       const displayValue = typeof value === 'number' ? formatNumber(value) : value;
       return `• ${label}: ${displayValue}`;
     }).join('\n');
@@ -334,11 +348,13 @@ async function createNotionProject(answers) {
     resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
   ]);
 
+  const { prefixedTitle, prefix } = await buildPrefixedTitle(answers.projectName);
+
   const properties = {
     [NOTION_PROPERTIES.title]: {
       title: [
         {
-          text: { content: answers.projectName },
+          text: { content: prefixedTitle },
         },
       ],
     },
@@ -370,6 +386,8 @@ async function createNotionProject(answers) {
   return {
     url: response.url,
     unresolvedPeople,
+    title: prefixedTitle,
+    prefix,
   };
 }
 
@@ -401,10 +419,10 @@ function normalizeProjectType(input) {
     };
   }
 
-  const key = cleaned.toLowerCase().replace(/\s+/g, ' ');
+  const lower = cleaned.toLowerCase();
   const canonical =
-    PROJECT_TYPE_ALIASES[key] ||
-    PROJECT_TYPE_OPTIONS.find((option) => option.toLowerCase() === key);
+    PROJECT_TYPE_ALIASES[lower.replace(/[\s_-]+/g, '')] ||
+    PROJECT_TYPE_OPTIONS.find((option) => option.toLowerCase() === lower);
 
   if (!canonical) {
     return {
@@ -461,6 +479,60 @@ function formatNumber(value) {
     minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+async function buildPrefixedTitle(baseName) {
+  const trimmedBase = stripExistingPrefix(baseName);
+  const yearSuffix = String(new Date().getFullYear()).slice(-2);
+  const matcher = new RegExp(`^P[_-]?${yearSuffix}(\\d{3})`, 'i');
+
+  let cursor;
+  let maxSequence = 0;
+
+  do {
+    const response = await notion.databases.query({
+      database_id: notionDatabaseId,
+      start_cursor: cursor,
+      page_size: 100,
+    });
+
+    for (const page of response.results) {
+      const titleProp = page.properties?.[NOTION_PROPERTIES.title];
+      if (!titleProp || titleProp.type !== 'title') {
+        continue;
+      }
+
+      const titleText = titleProp.title.map((item) => item.plain_text ?? '').join('').trim();
+      if (!titleText) {
+        continue;
+      }
+
+      const match = matcher.exec(titleText);
+      if (match) {
+        const seq = Number.parseInt(match[1], 10);
+        if (Number.isInteger(seq) && seq > maxSequence) {
+          maxSequence = seq;
+        }
+      }
+    }
+
+    cursor = response.has_more ? response.next_cursor : undefined;
+  } while (cursor);
+
+  const nextSequence = maxSequence + 1;
+  const sequenceStr = String(nextSequence).padStart(3, '0');
+  const prefix = `P_${yearSuffix}${sequenceStr}`;
+  const prefixedTitle = `${prefix} ${trimmedBase}`;
+
+  return { prefixedTitle, prefix, sequence: nextSequence };
+}
+
+function stripExistingPrefix(name) {
+  const trimmed = (name ?? '').trim();
+  if (!trimmed) {
+    return 'Unbenanntes Projekt';
+  }
+  return trimmed.replace(/^P[_-]?\d{2}\d{3}\s*/i, '').trim() || 'Unbenanntes Projekt';
 }
 
 async function resolvePersonProperty(rawValue, label, unresolvedPeople) {

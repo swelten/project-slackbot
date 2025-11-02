@@ -54,7 +54,7 @@ npx serverless info --verbose
 
 ## Conversation flow
 
-Running `/init` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort fragt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW` ab, speichert die Antworten, erstellt danach via `createNotionProject` den Datensatz in Notion und postet die Zusammenfassung (inklusive Link zur neuen Seite) zurück in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
+Running `/newproject` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort fragt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW` ab, speichert die Antworten, erstellt danach via `createNotionProject` den Datensatz in Notion und postet die Zusammenfassung (inklusive Link zur neuen Seite) zurück in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
 Wichtig: Der Bot muss Mitglied des Channels sein. Falls du die Meldung erhältst, dass er nicht posten darf, lade ihn mit `/invite @akq-bot-stub` ein und starte den Flow erneut.
 
 Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-Namen siehe `NOTION_PROPERTIES` in `src/index.js`):
@@ -65,6 +65,7 @@ Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-N
 - `Inhaltlich` (People)
 - `Koordination` (People)
 - `Art` (Select mit Optionen `Kundenprojekte`, `Forschungsprojekt`, `Internes Projekt`)
+- Projekttitel werden automatisch mit einem Präfix `P_YYXXX` versehen (`YY` = aktuelles Jahr, `XXX` = fortlaufende Nummer pro Jahr). Bestehende Nummern im Notion-Workspace werden ausgelesen, damit die Sequenz weiterläuft.
 
 Die Notion-Anbindung erstellt unmittelbar einen Eintrag in der Datenbank. Personen werden über den Namen aufgelöst (`notion.users.list`). Falls ein Name nicht eindeutig gefunden wird, informiert der Bot den Nutzer in der Abschlussnachricht und lässt das People-Feld leer.
 Tipp: Gib die Person genauso an, wie sie in Notion erscheint (oder nutze einen Slack-@Mention), sonst kann die Zuordnung fehlschlagen.
@@ -95,7 +96,7 @@ features:
   bot_user:
     display_name: akq-bot
   slash_commands:
-    - command: /init
+    - command: /newproject
       description: Starte den Projekt-Dialog
       should_escape: false
       url: https://YOUR_LAMBDA_URL_BASE/slack/events
@@ -129,4 +130,4 @@ After creating the app from the manifest:
 Smoke test:
 
 - `GET https://YOUR_LAMBDA_URL_BASE/healthz` → `ok`
-- In Slack, run `/init` in any channel → expect an ephemeral confirmation and a DM conversation that collects project details
+- In Slack, run `/newproject` in any channel → expect an ephemeral confirmation and eine Thread-Konversation, die Projektdetails einsammelt
