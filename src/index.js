@@ -47,7 +47,7 @@ const QUESTION_FLOW = [
   {
     key: 'contentLead',
     label: 'Inhaltlich verantwortlich',
-    prompt: 'Wer ist inhaltlich verantwortlich? (Bitte @-Name oder Klarnamen angeben.)',
+    prompt: 'Wer ist inhaltlich verantwortlich? (Bitte den Notion-Namen oder @-Name angeben.)',
     normalize: (input) => {
       const cleaned = input.trim();
       if (!cleaned) {
@@ -59,7 +59,7 @@ const QUESTION_FLOW = [
   {
     key: 'coordination',
     label: 'Koordination',
-    prompt: 'Wer koordiniert das Projekt? (Bitte @-Name oder Klarnamen angeben.)',
+    prompt: 'Wer koordiniert das Projekt? (Bitte den Notion-Namen oder @-Name angeben.)',
     normalize: (input) => {
       const cleaned = input.trim();
       if (!cleaned) {
@@ -129,26 +129,27 @@ app.command('/init', async ({ ack, command, respond, client, logger }) => {
   if (existingSession) {
     await respond({
       response_type: 'ephemeral',
-      text: 'Ich sammle bereits Angaben für dich im Direktchat. Schau bitte in deine Nachrichten.',
+      text: 'Ich sammle bereits Angaben für dich. Bitte nutze den bestehenden Thread.',
     });
     return;
   }
 
   try {
-    const dm = await client.conversations.open({ users: command.user_id });
-    const channel = dm.channel?.id;
+    const channel = command.channel_id;
 
-    if (!channel) {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'Ich konnte keinen Direktchat öffnen. Bitte prüfe meine Slack-Berechtigungen.',
-      });
-      return;
+    try {
+      await client.conversations.join({ channel });
+    } catch (joinError) {
+      const knownErrors = ['method_not_supported_for_channel_type', 'already_in_channel', 'cant_join_own_dm_channel'];
+      if (!knownErrors.includes(joinError.data?.error)) {
+        throw joinError;
+      }
     }
 
     const session = {
       userId: command.user_id,
       channel,
+      threadTs: null,
       stepIndex: 0,
       answers: {},
     };
@@ -156,20 +157,28 @@ app.command('/init', async ({ ack, command, respond, client, logger }) => {
 
     await respond({
       response_type: 'ephemeral',
-      text: 'Alles klar! Ich habe dir eine Direktnachricht geschickt, um die Projektdetails einzusammeln.',
+      text: 'Alles klar! Ich starte den Projektdialog gleich hier im Channel. Bitte antworte im Thread.',
     });
+
+    const introMessage = await client.chat.postMessage({
+      channel,
+      text: `Hey <@${command.user_id}>, lass uns die Projektdetails hier im Thread sammeln. Du kannst jederzeit mit \`stop\` abbrechen.`,
+    });
+
+    session.threadTs = introMessage.ts;
 
     await client.chat.postMessage({
       channel,
+      thread_ts: session.threadTs,
       text: [
-        'Hallo! Lass uns Schritt für Schritt dein neues Notion-Projekt anlegen.',
-        'Du kannst den Prozess jederzeit abbrechen, indem du `stop` schreibst.',
+        'Los geht’s! Bitte beantworte die Fragen direkt in diesem Thread.',
         '',
         QUESTION_FLOW[session.stepIndex].prompt,
       ].join('\n'),
     });
   } catch (error) {
     logger.error('Failed to start onboarding session', error);
+    sessionStore.delete(command.user_id);
     await respond({
       response_type: 'ephemeral',
       text: 'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.',
@@ -182,12 +191,29 @@ app.event('message', async ({ event, client, logger }) => {
     return;
   }
 
-  if (event.channel_type !== 'im') {
+  const session = sessionStore.get(event.user);
+  if (!session) {
     return;
   }
 
-  const session = sessionStore.get(event.user);
-  if (!session || session.channel !== event.channel) {
+  if (event.channel !== session.channel) {
+    return;
+  }
+
+  const isThreadReply =
+    session.threadTs &&
+    (event.thread_ts === session.threadTs || (!event.thread_ts && event.ts === session.threadTs));
+
+  if (!isThreadReply) {
+    try {
+      await client.chat.postEphemeral({
+        channel: session.channel,
+        user: session.userId,
+        text: 'Bitte antworte direkt im Thread, damit nichts verloren geht.',
+      });
+    } catch (error) {
+      logger.warn('Failed to nudge user back into thread', error);
+    }
     return;
   }
 
@@ -195,6 +221,7 @@ app.event('message', async ({ event, client, logger }) => {
   if (!rawAnswer) {
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: 'Bitte gib eine Antwort ein, damit ich weitermachen kann.',
     });
     return;
@@ -204,6 +231,7 @@ app.event('message', async ({ event, client, logger }) => {
     sessionStore.delete(session.userId);
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: 'Alles klar, ich habe den Flow abgebrochen. Starte ihn jederzeit neu mit `/init`.',
     });
     return;
@@ -217,6 +245,7 @@ app.event('message', async ({ event, client, logger }) => {
   if (!normalized.ok) {
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: normalized.error ?? 'Das konnte ich nicht verarbeiten. Versuche es bitte noch einmal.',
     });
     return;
@@ -229,6 +258,7 @@ app.event('message', async ({ event, client, logger }) => {
     const nextQuestion = QUESTION_FLOW[session.stepIndex];
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: nextQuestion.prompt,
     });
     return;
@@ -259,12 +289,14 @@ app.event('message', async ({ event, client, logger }) => {
 
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: messageLines.join('\n'),
     });
   } catch (error) {
     logger.error('Failed to create Notion project', error);
     await client.chat.postMessage({
       channel: session.channel,
+      thread_ts: session.threadTs,
       text: 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.',
     });
   } finally {

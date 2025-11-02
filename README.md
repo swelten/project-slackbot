@@ -38,7 +38,8 @@ npm install
 2. **Set the Notion integration secrets** on the Lambda:  
    - `NOTION_TOKEN`: Internal integration token from Notion (Setup → Connections → Develop or Manage integrations).  
    - `NOTION_DATABASE_ID`: ID of the Projektdatenbank (Share → Copy link, then extract the 32 character ID).  
-   Configure them as Lambda environment variables or SSM parameters referenced in `serverless.yml`.
+   Configure them as Lambda environment variables or SSM parameters referenced in `serverless.yml`.  
+   Vergiss nicht, die Datenbank mit der Integration zu teilen (Notion → Share → Invite → Integration auswählen).
 3. **Configure GitHub → AWS OIDC** with an IAM role similar to `arn:aws:iam::<ACCOUNT_ID>:role/GitHubActionsOIDCDeploy`. Grant it permissions for CloudFormation, Lambda, IAM PassRole, and SSM read.
 4. **Review** `.github/workflows/deploy.yml` and update the `role-to-assume` value with your account ID. Ensure the IAM role grants CloudFormation, Lambda, ECR (GetAuthorizationToken, BatchCheckLayerAvailability, PutImage, InitiateLayerUpload, UploadLayerPart, CompleteLayerUpload), IAM PassRole (if needed), and SSM `GetParameter` permissions.
 5. **Optionally adjust `NOTION_PROPERTIES` / `QUESTION_FLOW`** in `src/index.js` if eure Datenbank andere Property-Namen nutzt.
@@ -52,7 +53,7 @@ npx serverless info --verbose
 
 ## Conversation flow
 
-Running `/init` opens a direct message with the invoking user. The bot asks each question defined in `QUESTION_FLOW`, speichert die Antworten, erstellt anschließend über `createNotionProject` einen Eintrag in der angegebenen Notion-Datenbank und sendet die Zusammenfassung zurück. Users can type `stop` in the DM to abort the flow.
+Running `/init` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort fragt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW` ab, speichert die Antworten, erstellt danach via `createNotionProject` den Datensatz in Notion und postet die Zusammenfassung (inklusive Link zur neuen Seite) zurück in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
 
 Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-Namen siehe `NOTION_PROPERTIES` in `src/index.js`):
 
@@ -64,6 +65,7 @@ Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-N
 - Art des Projekts (`Kundenprojekt`, `Forschungsprojekt`, `Internes Projekt`)
 
 Die Notion-Anbindung erstellt unmittelbar einen Eintrag in der Datenbank. Personen werden über den Namen aufgelöst (`notion.users.list`). Falls ein Name nicht eindeutig gefunden wird, informiert der Bot den Nutzer in der Abschlussnachricht und lässt das People-Feld leer.
+Tipp: Gib die Person genauso an, wie sie in Notion erscheint (oder nutze einen Slack-@Mention), sonst kann die Zuordnung fehlschlagen.
 
 ## Docker image deployment
 
@@ -100,12 +102,15 @@ oauth_config:
     bot:
       - commands
       - chat:write
-      - im:write
+      - channels:history
+      - groups:history
       - im:history
 settings:
   event_subscriptions:
     request_url: https://YOUR_LAMBDA_URL_BASE/slack/events
     bot_events:
+      - message.channels
+      - message.groups
       - message.im
   interactivity:
     is_enabled: true
