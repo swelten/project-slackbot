@@ -482,7 +482,7 @@ function formatNumber(value) {
 }
 
 async function buildPrefixedTitle(baseName) {
-  const trimmedBase = stripExistingPrefix(baseName);
+  const trimmedBase = sanitizeTitle(stripExistingPrefix(baseName));
   const yearSuffix = String(new Date().getFullYear()).slice(-2);
   const matcher = new RegExp(`^P[_-]?${yearSuffix}(\\d{3})`, 'i');
 
@@ -521,8 +521,8 @@ async function buildPrefixedTitle(baseName) {
 
   const nextSequence = maxSequence + 1;
   const sequenceStr = String(nextSequence).padStart(3, '0');
-  const prefix = `P_${yearSuffix}${sequenceStr}`;
-  const prefixedTitle = `${prefix} ${trimmedBase}`;
+  const prefix = `P${yearSuffix}${sequenceStr}_`;
+  const prefixedTitle = `${prefix}${trimmedBase}`;
 
   return { prefixedTitle, prefix, sequence: nextSequence };
 }
@@ -533,6 +533,10 @@ function stripExistingPrefix(name) {
     return 'Unbenanntes Projekt';
   }
   return trimmed.replace(/^P[_-]?\d{2}\d{3}\s*/i, '').trim() || 'Unbenanntes Projekt';
+}
+
+function sanitizeTitle(name) {
+  return name.replace(/\s+/g, '_');
 }
 
 async function resolvePersonProperty(rawValue, label, unresolvedPeople) {

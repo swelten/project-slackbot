@@ -84,41 +84,47 @@ The resulting image exposes the Lambda handler `src/index.handler`. When deployi
 
 ## Slack app setup
 
-Use the manifest below and replace `YOUR_LAMBDA_URL_BASE` with the deployed function URL (without trailing slash):
+Use the manifest below (update URLs if your Lambda Function URL changes):
 
 ```yaml
 _metadata:
   major_version: 2
   minor_version: 1
 display_information:
-  name: akq-bot-stub
+  name: Akquise und Projekt Bot
+  description: Bot für die Erstellung von Projekten und Akquisen
+  background_color: "#2047bd"
 features:
   bot_user:
     display_name: akq-bot
+    always_online: true
   slash_commands:
     - command: /newproject
-      description: Starte den Projekt-Dialog
+      url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
+      description: Init stub
       should_escape: false
-      url: https://YOUR_LAMBDA_URL_BASE/slack/events
 oauth_config:
   scopes:
     bot:
-      - commands
       - chat:write
+      - commands
+      - im:history
+      - im:write
       - channels:history
       - groups:history
-      - im:history
 settings:
   event_subscriptions:
-    request_url: https://YOUR_LAMBDA_URL_BASE/slack/events
+    request_url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
     bot_events:
       - message.channels
       - message.groups
       - message.im
   interactivity:
     is_enabled: true
-    request_url: https://YOUR_LAMBDA_URL_BASE/slack/events
+    request_url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
+  org_deploy_enabled: false
   socket_mode_enabled: false
+  token_rotation_enabled: false
 ```
 
 After creating the app from the manifest:
