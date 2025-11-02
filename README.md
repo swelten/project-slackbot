@@ -40,6 +40,7 @@ npm install
    - `NOTION_DATABASE_ID`: ID of the Projektdatenbank (Share → Copy link, then extract the 32 character ID).  
    Configure them as Lambda environment variables or SSM parameters referenced in `serverless.yml`.  
    Vergiss nicht, die Datenbank mit der Integration zu teilen (Notion → Share → Invite → Integration auswählen).
+   Achte darauf, dass die ID keine zusätzlichen Zeichen (z. B. Punkt am Ende) enthält – der Bot entfernt zwar Sonderzeichen, aber die ID sollte exakt 32 Hex-Zeichen umfassen.
 3. **Configure GitHub → AWS OIDC** with an IAM role similar to `arn:aws:iam::<ACCOUNT_ID>:role/GitHubActionsOIDCDeploy`. Grant it permissions for CloudFormation, Lambda, IAM PassRole, and SSM read.
 4. **Review** `.github/workflows/deploy.yml` and update the `role-to-assume` value with your account ID. Ensure the IAM role grants CloudFormation, Lambda, ECR (GetAuthorizationToken, BatchCheckLayerAvailability, PutImage, InitiateLayerUpload, UploadLayerPart, CompleteLayerUpload), IAM PassRole (if needed), and SSM `GetParameter` permissions.
 5. **Optionally adjust `NOTION_PROPERTIES` / `QUESTION_FLOW`** in `src/index.js` if eure Datenbank andere Property-Namen nutzt.

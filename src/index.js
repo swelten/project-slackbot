@@ -103,7 +103,7 @@ const notion =
   process.env.NOTION_TOKEN && process.env.NOTION_TOKEN.trim()
     ? new NotionClient({ auth: process.env.NOTION_TOKEN.trim() })
     : null;
-const notionDatabaseId = process.env.NOTION_DATABASE_ID?.trim();
+const notionDatabaseId = process.env.NOTION_DATABASE_ID?.trim().replace(/[^a-f0-9-]/gi, '');
 let cachedNotionUsers = null;
 
 app.command('/init', async ({ ack, command, respond, client, logger }) => {
@@ -286,6 +286,7 @@ app.event('message', async ({ event, client, logger }) => {
     });
   } catch (error) {
     logger.error('Failed to create Notion project', error);
+    console.error('Notion error details:', JSON.stringify(safeError(error), null, 2));
 
     let message = 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.';
     if (isWrongNotionDatabase(error)) {
@@ -471,6 +472,30 @@ function getStartErrorMessage(error) {
     default:
       return 'Beim Starten des Frage-Antwort-Flows ist etwas schiefgelaufen. Bitte versuche es später erneut.';
   }
+}
+
+function safeError(error) {
+  if (!error) {
+    return null;
+  }
+  if (typeof error === 'string') {
+    return { message: error };
+  }
+  const base = {
+    message: error.message,
+    status: error.status ?? error.statusCode,
+    code: error.code,
+  };
+  if (error.body) {
+    base.body = {
+      object: error.body.object,
+      code: error.body.code,
+      status: error.body.status,
+      message: error.body.message,
+      details: error.body?.details,
+    };
+  }
+  return base;
 }
 
 export const handler = async (event, context, callback) => {
