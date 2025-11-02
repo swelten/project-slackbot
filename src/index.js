@@ -1,4 +1,6 @@
-import { App, AwsLambdaReceiver } from '@slack/bolt';
+import bolt from '@slack/bolt';
+
+const { App, AwsLambdaReceiver } = bolt;
 
 // Receiver validates Slack signatures via Slack signing secret
 const receiver = new AwsLambdaReceiver({
