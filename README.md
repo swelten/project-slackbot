@@ -54,7 +54,7 @@ npx serverless info --verbose
 
 ## Conversation flow
 
-Running `/newproject` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort sammelt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW`, erstellt anschließend den Datensatz in Notion **und legt automatisch einen Slack-Channel `prj_<slug>` an** (der Aufrufer wird hinzugefügt). Zum Schluss postet der Bot eine Zusammenfassung mit dem Notion-Link und dem Channel-Hinweis in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
+Running `/newproject` startet einen Thread im Channel, in dem der Slash-Command ausgeführt wurde. Dort sammelt der Bot Schritt für Schritt die Eigenschaften aus `QUESTION_FLOW`, zeigt für Personenfelder eine Liste der möglichen Notion-Nutzer, lässt den Projekttyp per Button auswählen und erstellt anschließend den Datensatz in Notion **sowie automatisch einen Slack-Channel `prj_<slug>`** (der Aufrufer wird hinzugefügt). Zum Schluss postet der Bot eine Zusammenfassung mit Notion-Link und Channel-Hinweis in den Thread. Mit `stop` kann der Nutzer den Flow jederzeit abbrechen.
 Wichtig: Der Bot muss Mitglied des Channels sein. Falls du die Meldung erhältst, dass er nicht posten darf, lade ihn mit `/invite @akq-bot-stub` ein und starte den Flow erneut.
 
 Aktuell erfasst der Flow folgende Felder analog zur Notion-Datenbank (Property-Namen siehe `NOTION_PROPERTIES` in `src/index.js`):

@@ -96,7 +96,8 @@ const QUESTION_FLOW = [
   {
     key: 'projectType',
     label: 'Art des Projekts',
-    prompt: `Welche Art von Projekt ist es? (${PROJECT_TYPE_OPTIONS.join(', ')})`,
+    prompt: `Welcher Projekttyp passt?`,
+    type: 'projectType',
     normalize: (input) => normalizeProjectType(input),
   },
 ];
@@ -150,12 +151,22 @@ app.command('/newproject', async ({ ack, command, respond, client, logger }) => 
   try {
     const channel = command.channel_id;
 
+    let peopleHint = '';
+    try {
+      const notionUsers = await listNotionUsers();
+      const names = notionUsers.map((user) => user.name).filter(Boolean);
+      peopleHint = buildPeopleHint(names);
+    } catch (peopleError) {
+      logger.warn('Could not fetch Notion users for hint', peopleError);
+    }
+
     const session = {
       userId: command.user_id,
       channel,
       threadTs: null,
       stepIndex: 0,
       answers: {},
+      peopleHint,
     };
     sessionStore.set(session.userId, session);
 
@@ -171,15 +182,7 @@ app.command('/newproject', async ({ ack, command, respond, client, logger }) => 
 
     session.threadTs = introMessage.ts;
 
-    await client.chat.postMessage({
-      channel,
-      thread_ts: session.threadTs,
-      text: [
-        'Los geht’s! Bitte beantworte die Fragen direkt in diesem Thread.',
-        '',
-        QUESTION_FLOW[session.stepIndex].prompt,
-      ].join('\n'),
-    });
+    await sendQuestion(session, client);
   } catch (error) {
     logger.error('Failed to start onboarding session', error);
     sessionStore.delete(command.user_id);
@@ -242,119 +245,36 @@ app.event('message', async ({ event, client, logger }) => {
     return;
   }
 
-  const currentQuestion = QUESTION_FLOW[session.stepIndex];
-  const normalized = currentQuestion.normalize
-    ? currentQuestion.normalize(rawAnswer)
-    : { ok: true, value: rawAnswer };
+  await processAnswer(session, rawAnswer, client, logger);
+});
 
-  if (!normalized.ok) {
-    await client.chat.postMessage({
-      channel: session.channel,
-      thread_ts: session.threadTs,
-      text: normalized.error ?? 'Das konnte ich nicht verarbeiten. Versuche es bitte noch einmal.',
-    });
+app.action('project_type_option', async ({ ack, body, action, client, logger }) => {
+  await ack();
+  const userId = body.user?.id;
+  if (!userId) {
     return;
   }
 
-  session.answers[currentQuestion.key] = normalized.value;
-  session.stepIndex += 1;
-
-  if (session.stepIndex < QUESTION_FLOW.length) {
-    const nextQuestion = QUESTION_FLOW[session.stepIndex];
-    await client.chat.postMessage({
-      channel: session.channel,
-      thread_ts: session.threadTs,
-      text: nextQuestion.prompt,
-    });
+  const session = sessionStore.get(userId);
+  if (!session) {
     return;
   }
 
-  try {
-    const notionResult = await createNotionProject(session.answers);
-    if (notionResult?.title) {
-      session.answers.prefixedProjectName = notionResult.title;
-      session.answers.projectCode = notionResult.prefix;
-    }
-    if (notionResult?.channelSlug) {
-      session.answers.channelSlug = notionResult.channelSlug;
-    }
-    const summary = QUESTION_FLOW.map(({ label, key }) => {
-      const value =
-        key === 'projectName'
-          ? session.answers.prefixedProjectName ?? session.answers[key]
-          : session.answers[key];
-      const displayValue = typeof value === 'number' ? formatNumber(value) : value;
-      return `• ${label}: ${displayValue}`;
-    }).join('\n');
-    const followUp = notionResult?.url ?? 'Ich konnte keine Notion-Seite verlinken. Bitte prüfe die Logs für Details.';
-
-    const messageLines = [
-      'Danke! Ich habe alle Angaben gesammelt:',
-      summary,
-      '',
-      followUp,
-    ];
-
-    let projectChannelInfo;
-    try {
-      if (notionResult?.channelSlug) {
-        projectChannelInfo = await ensureProjectChannel({
-          client,
-          slug: notionResult.channelSlug,
-          userId: session.userId,
-          logger,
-        });
-      }
-    } catch (channelError) {
-      logger.error('Failed to ensure project channel', channelError);
-      messageLines.push(
-        '',
-        'Hinweis: Der Projekt-Channel konnte nicht erstellt werden. Bitte prüfe meine Slack-Berechtigungen (benötigt `channels:manage` und `channels:read`).',
-      );
-    }
-
-    if (projectChannelInfo?.id) {
-      const mention = `<#${projectChannelInfo.id}|${projectChannelInfo.name}>`;
-      const infoText = projectChannelInfo.created
-        ? `Ich habe den Channel ${mention} erstellt und dich hinzugefügt.`
-        : `Channel ${mention} existiert bereits; ich habe dich hinzugefügt (falls nötig).`;
-      messageLines.push('', infoText);
-    }
-
-    if (notionResult?.unresolvedPeople?.length) {
-      messageLines.push(
-        '',
-        'Hinweis: Diese Personen konnte ich nicht automatisch in Notion zuordnen:',
-        ...notionResult.unresolvedPeople.map(({ label, value }) => `• ${label}: ${value}`),
-      );
-    }
-
-    await client.chat.postMessage({
-      channel: session.channel,
-      thread_ts: session.threadTs,
-      text: messageLines.join('\n'),
-    });
-  } catch (error) {
-    logger.error('Failed to create Notion project', error);
-    console.error('Notion error details:', JSON.stringify(safeError(error), null, 2));
-
-    let message = 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.';
-    if (isWrongNotionDatabase(error)) {
-      message =
-        'Ich konnte die Notion-Datenbank nicht finden. Bitte prüfe, ob `NOTION_DATABASE_ID` korrekt ist und die Integration Zugriff auf die Datenbank hat.';
-    } else if (isDeniedNotionAccess(error)) {
-      message =
-        'Ich habe keinen Zugriff auf die Notion-Datenbank. Bitte teile die Datenbank mit meiner Integration und versuche es erneut.';
-    }
-
-    await client.chat.postMessage({
-      channel: session.channel,
-      thread_ts: session.threadTs,
-      text: message,
-    });
-  } finally {
-    sessionStore.delete(session.userId);
+  if (body.channel?.id && session.channel !== body.channel.id) {
+    return;
   }
+
+  const threadTs = body.container?.thread_ts ?? body.message?.thread_ts;
+  if (session.threadTs && threadTs && threadTs !== session.threadTs) {
+    return;
+  }
+
+  const value = action?.value;
+  if (!value) {
+    return;
+  }
+
+  await processAnswer(session, value, client, logger);
 });
 
 app.error((error) => {
@@ -583,6 +503,180 @@ function buildChannelSlug(sanitizedBase) {
   const collapsed = cleaned.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
   const slug = collapsed || 'projekt';
   return slug.slice(0, 60);
+}
+
+function buildPeopleHint(names) {
+  if (!names?.length) {
+    return '';
+  }
+  const display = names.slice(0, 8).join(', ');
+  return names.length > 8 ? `${display}, …` : display;
+}
+
+function needsPeopleHint(questionKey) {
+  return questionKey === 'contentLead' || questionKey === 'coordination';
+}
+
+async function sendQuestion(session, client) {
+  const question = QUESTION_FLOW[session.stepIndex];
+  if (!question) {
+    return;
+  }
+
+  let text = question.prompt;
+  if (needsPeopleHint(question.key) && session.peopleHint) {
+    text = `${text}\nVerfügbare Personen: ${session.peopleHint}`;
+  }
+
+  if (question.type === 'projectType') {
+    await client.chat.postMessage({
+      channel: session.channel,
+      thread_ts: session.threadTs,
+      text,
+      blocks: [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text },
+        },
+        {
+          type: 'actions',
+          elements: PROJECT_TYPE_OPTIONS.map((option) => ({
+            type: 'button',
+            text: { type: 'plain_text', text: option, emoji: true },
+            value: option,
+            action_id: 'project_type_option',
+          })),
+        },
+      ],
+    });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel: session.channel,
+    thread_ts: session.threadTs,
+    text,
+  });
+}
+
+async function processAnswer(session, rawAnswer, client, logger) {
+  const question = QUESTION_FLOW[session.stepIndex];
+  if (!question) {
+    return;
+  }
+
+  const normalized = question.normalize
+    ? question.normalize(rawAnswer)
+    : { ok: true, value: rawAnswer };
+
+  if (!normalized.ok) {
+    await client.chat.postMessage({
+      channel: session.channel,
+      thread_ts: session.threadTs,
+      text: normalized.error ?? 'Das konnte ich nicht verarbeiten. Versuche es bitte noch einmal.',
+    });
+    return;
+  }
+
+  session.answers[question.key] = normalized.value;
+  session.stepIndex += 1;
+
+  if (session.stepIndex < QUESTION_FLOW.length) {
+    await sendQuestion(session, client);
+    return;
+  }
+
+  await finalizeSession(session, client, logger);
+}
+
+async function finalizeSession(session, client, logger) {
+  try {
+    const notionResult = await createNotionProject(session.answers);
+    if (notionResult?.title) {
+      session.answers.prefixedProjectName = notionResult.title;
+      session.answers.projectCode = notionResult.prefix;
+    }
+    if (notionResult?.channelSlug) {
+      session.answers.channelSlug = notionResult.channelSlug;
+    }
+
+    const summary = QUESTION_FLOW.map(({ label, key }) => {
+      const value =
+        key === 'projectName'
+          ? session.answers.prefixedProjectName ?? session.answers[key]
+          : session.answers[key];
+      const displayValue = typeof value === 'number' ? formatNumber(value) : value;
+      return `• ${label}: ${displayValue}`;
+    }).join('\n');
+    const followUp = notionResult?.url ?? 'Ich konnte keine Notion-Seite verlinken. Bitte prüfe die Logs für Details.';
+
+    const messageLines = [
+      'Danke! Ich habe alle Angaben gesammelt:',
+      summary,
+      '',
+      followUp,
+    ];
+
+    let projectChannelInfo;
+    try {
+      if (notionResult?.channelSlug) {
+        projectChannelInfo = await ensureProjectChannel({
+          client,
+          slug: notionResult.channelSlug,
+          userId: session.userId,
+          logger,
+        });
+      }
+    } catch (channelError) {
+      logger.error('Failed to ensure project channel', channelError);
+      messageLines.push(
+        '',
+        'Hinweis: Der Projekt-Channel konnte nicht erstellt werden. Bitte prüfe meine Slack-Berechtigungen (benötigt `channels:manage` und `channels:read`).',
+      );
+    }
+
+    if (projectChannelInfo?.id) {
+      const mention = `<#${projectChannelInfo.id}|${projectChannelInfo.name}>`;
+      const infoText = projectChannelInfo.created
+        ? `Ich habe den Channel ${mention} erstellt und dich hinzugefügt.`
+        : `Channel ${mention} existiert bereits; ich habe dich hinzugefügt (falls nötig).`;
+      messageLines.push('', infoText);
+    }
+
+    if (notionResult?.unresolvedPeople?.length) {
+      messageLines.push(
+        '',
+        'Hinweis: Diese Personen konnte ich nicht automatisch in Notion zuordnen:',
+        ...notionResult.unresolvedPeople.map(({ label, value }) => `• ${label}: ${value}`),
+      );
+    }
+
+    await client.chat.postMessage({
+      channel: session.channel,
+      thread_ts: session.threadTs,
+      text: messageLines.join('\n'),
+    });
+  } catch (error) {
+    logger.error('Failed to create Notion project', error);
+    console.error('Notion error details:', JSON.stringify(safeError(error), null, 2));
+
+    let message = 'Beim Anlegen des Notion-Projekts ist ein Fehler aufgetreten. Bitte versuche es später erneut.';
+    if (isWrongNotionDatabase(error)) {
+      message =
+        'Ich konnte die Notion-Datenbank nicht finden. Bitte prüfe, ob `NOTION_DATABASE_ID` korrekt ist und die Integration Zugriff auf die Datenbank hat.';
+    } else if (isDeniedNotionAccess(error)) {
+      message =
+        'Ich habe keinen Zugriff auf die Notion-Datenbank. Bitte teile die Datenbank mit meiner Integration und versuche es erneut.';
+    }
+
+    await client.chat.postMessage({
+      channel: session.channel,
+      thread_ts: session.threadTs,
+      text: message,
+    });
+  } finally {
+    sessionStore.delete(session.userId);
+  }
 }
 
 async function ensureProjectChannel({ client, slug, userId, logger }) {
