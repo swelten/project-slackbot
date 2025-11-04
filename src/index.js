@@ -248,7 +248,7 @@ app.event('message', async ({ event, client, logger }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
-app.action('project_type_option', async ({ ack, body, action, client, logger }) => {
+app.action(/project_type_option_.+/, async ({ ack, body, action, client, logger }) => {
   await ack();
   const userId = body.user?.id;
   if (!userId) {
@@ -540,11 +540,11 @@ async function sendQuestion(session, client) {
         },
         {
           type: 'actions',
-          elements: PROJECT_TYPE_OPTIONS.map((option) => ({
+          elements: PROJECT_TYPE_OPTIONS.map((option, index) => ({
             type: 'button',
             text: { type: 'plain_text', text: option, emoji: true },
             value: option,
-            action_id: 'project_type_option',
+            action_id: `project_type_option_${index}`,
           })),
         },
       ],
