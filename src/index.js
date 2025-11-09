@@ -251,12 +251,6 @@ const FLOW_CONFIGS = {
             prompt: 'Wer bearbeitet die Akquise? (Optional, Notion-Name oder @-Name)',
             normalize: (input) => ({ ok: true, value: input.trim() }),
           },
-          {
-            key: 'dueDate',
-            label: 'Nächster Schritt bis',
-            prompt: 'Bis wann ist der nächste Schritt geplant? (Format 2024-05-01, optional)',
-            normalize: (input) => validateOptionalDate(input),
-          },
         ],
         notionProperties: ACQUISITION_NOTION_PROPERTIES,
         databaseEnv: 'NOTION_ACQ_DATABASE_ID',
@@ -383,7 +377,7 @@ const FLOW_CONFIGS = {
   },
 };
 
-const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8']; // Julian & Adrian
+const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
   (process.env.SLACK_PROJECT_CHANNEL_MEMBERS && process.env.SLACK_PROJECT_CHANNEL_MEMBERS.trim()) ||
   DEFAULT_PROJECT_CHANNEL_MEMBERS.join(',');
@@ -815,11 +809,6 @@ async function createNotionProject(answers, flow) {
         people: assigneePeople,
       };
     }
-    if (acquisitionProps.due) {
-      properties[acquisitionProps.due] = {
-        date: answers.dueDate ? { start: answers.dueDate } : null,
-      };
-    }
   } else {
     if (answers.startDate && answers.endDate && answers.endDate < answers.startDate) {
       throw new Error('Das Enddatum liegt vor dem Startdatum');
@@ -1056,7 +1045,8 @@ async function buildPrefixedTitle(baseName, options = {}) {
   if (!options.databaseId) {
     throw new Error('Notion-Datenbank-ID fehlt für die Präfix-Ermittlung');
   }
-  const sanitizedBase = sanitizeTitle(stripExistingPrefix(baseName));
+  const stripped = stripExistingPrefix(baseName);
+  const sanitizedBase = stripped.trim() ? sanitizeTitle(stripped) : sanitizeTitle(baseName);
   const yearSuffix = String(new Date().getFullYear()).slice(-2);
   const prefixLetter = options.prefixLetter || 'P';
   const matcher = new RegExp(`^${prefixLetter}[_-]?${yearSuffix}(\\d{3})`, 'i');
@@ -1612,7 +1602,7 @@ async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }
   try {
     const createResult = await client.conversations.create({
       name: channelName,
-      is_private: false,
+      is_private: true,
     });
     const channelId = createResult.channel?.id;
     if (channelId) {
