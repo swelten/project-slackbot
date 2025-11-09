@@ -30,6 +30,15 @@ const NOTION_PROPERTIES = {
   onedrive: 'OneDrive',
 };
 
+const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8']; // Julian & Adrian
+const rawProjectMembers =
+  (process.env.SLACK_PROJECT_CHANNEL_MEMBERS && process.env.SLACK_PROJECT_CHANNEL_MEMBERS.trim()) ||
+  DEFAULT_PROJECT_CHANNEL_MEMBERS.join(',');
+const PROJECT_CHANNEL_EXTRA_MEMBERS = rawProjectMembers
+  .split(',')
+  .map((id) => id.trim())
+  .filter(Boolean);
+
 const NOTION_SYSTEM_USER_NAMES = new Set(
   [
     'Notion Automations',
@@ -913,6 +922,7 @@ async function finalizeSession(session, client, logger) {
 
 async function ensureProjectChannel({ client, slug, userId, logger }) {
   const channelName = `prj_${slug}`;
+  const membersToInvite = buildProjectChannelMembers(userId);
   try {
     const createResult = await client.conversations.create({
       name: channelName,
@@ -920,14 +930,14 @@ async function ensureProjectChannel({ client, slug, userId, logger }) {
     });
     const channelId = createResult.channel?.id;
     if (channelId) {
-      await inviteUserToChannel(client, channelId, userId, logger);
+      await inviteUsersToChannel(client, channelId, membersToInvite, logger);
     }
     return { id: channelId, name: channelName, created: true };
   } catch (error) {
     if (error.data?.error === 'name_taken') {
       const existing = await findChannelByName(client, channelName);
       if (existing?.id) {
-        await inviteUserToChannel(client, existing.id, userId, logger);
+        await inviteUsersToChannel(client, existing.id, membersToInvite, logger);
         return { id: existing.id, name: channelName, created: false };
       }
     }
@@ -952,18 +962,49 @@ async function findChannelByName(client, name) {
   return null;
 }
 
-async function inviteUserToChannel(client, channelId, userId, logger) {
-  try {
-    await client.conversations.invite({
-      channel: channelId,
-      users: userId,
-    });
-  } catch (error) {
-    const ignoredErrors = ['already_in_channel', 'cant_invite_self', 'not_in_channel'];
-    if (!ignoredErrors.includes(error.data?.error)) {
-      logger?.warn?.('Failed to invite user to channel', error);
+async function inviteUsersToChannel(client, channelId, userIds, logger) {
+  const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+  if (!uniqueIds.length) {
+    return;
+  }
+
+  const chunks = chunkArray(uniqueIds, 30);
+  for (const chunk of chunks) {
+    try {
+      await client.conversations.invite({
+        channel: channelId,
+        users: chunk.join(','),
+      });
+    } catch (error) {
+      const ignoredErrors = ['already_in_channel', 'cant_invite_self', 'not_in_channel'];
+      if (!ignoredErrors.includes(error.data?.error)) {
+        logger?.warn?.('Failed to invite users to channel', {
+          error: error.data?.error,
+          channelId,
+          users: chunk,
+        });
+      }
     }
   }
+}
+
+function buildProjectChannelMembers(requestingUserId) {
+  const combined = [...PROJECT_CHANNEL_EXTRA_MEMBERS];
+  if (requestingUserId) {
+    combined.push(requestingUserId);
+  }
+  return combined;
+}
+
+function chunkArray(items, size) {
+  if (!items.length) {
+    return [];
+  }
+  const chunks = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
 }
 
 async function resolvePersonProperty(rawValue, label, unresolvedPeople) {
