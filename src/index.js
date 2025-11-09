@@ -20,6 +20,29 @@ const PROJECT_TYPE_ALIASES = {
   'internesprojekt': 'Internes Projekt',
 };
 
+const ACQUISITION_STATUS_OPTIONS = [
+  'Kontakt',
+  'Lead Qualifiziert',
+  'Bedarfsanalyse / Demo',
+  'Angebot',
+  'Angebot versendet',
+  'Verhandlung',
+  'Abgeschlossen & gewonnen',
+  'Verloren',
+  'To-Do',
+  'Archiv',
+];
+
+const RESEARCH_STATUS_OPTIONS = ['Idee', 'To-Do', 'In Bearbeitung', 'Eingereicht', 'Abgelehnt', 'Archiv'];
+
+const RESEARCH_LEAD_PARTNER_OPTIONS = [
+  'FloodWaive',
+  'AfWASA (African Water and Sanitation Association)',
+  'KNUST Ghana',
+  'University of Ghana',
+  'VIELCA Ingenieros S.A.',
+];
+
 const NOTION_PROPERTIES = {
   title: 'Name',
   budget: 'Budget',
@@ -28,6 +51,336 @@ const NOTION_PROPERTIES = {
   coordination: 'Koordination',
   projectType: 'Art',
   onedrive: 'OneDrive',
+};
+
+const ACQUISITION_NOTION_PROPERTIES = {
+  title: 'Name',
+  description: 'Projektbeschreibung',
+  status: 'Status des Kontakts',
+  owner: 'Verantwortlich',
+  assignee: 'Assignee',
+  due: 'Due',
+  onedrive: 'OneDrive',
+};
+
+const RESEARCH_ACQ_PROPERTIES = {
+  title: 'Name',
+  acronym: 'Akronym',
+  summary: 'Zusammenfassung',
+  description: 'Projektbeschreibung',
+  status: 'Status',
+  contactStatus: 'Status des Kontakts',
+  leadPartner: 'Lead-Partner',
+  partners: 'Partner',
+  verantwortliche: 'Verantwortlich',
+  deadline: 'Deadline',
+  timeframe: 'Zeitraum',
+  fundingRate: 'Förderquote (%)',
+  totalVolume: 'Gesamtvolumen (€)',
+  fwVolume: 'FW-Volumen (€)',
+  links: 'Links',
+  onedrive: 'OneDrive',
+};
+
+const FLOW_CONFIGS = {
+  project: {
+    key: 'project',
+    command: '/newproject',
+    displayName: 'Projekt',
+    introLabel: 'Projektdialog',
+    detailsLabel: 'Projektdetails',
+    summaryHeading: 'Projektdetails',
+    channelPrefix: 'prj',
+    channelLabel: 'Projekt-Channel',
+    prefixLetter: 'P',
+    notionProperties: NOTION_PROPERTIES,
+    questionFlow: [
+      {
+        key: 'projectName',
+        label: 'Projektname',
+        prompt: 'Wie soll das Projekt heißen?',
+        normalize: (input) => {
+          const cleaned = input.trim();
+          if (!cleaned) {
+            return { ok: false, error: 'Ich brauche einen Projektnamen. Versuch es bitte noch einmal.' };
+          }
+          return { ok: true, value: cleaned };
+        },
+      },
+      {
+        key: 'budget',
+        label: 'Budget',
+        prompt: 'Welches Budget ist eingeplant? (Bitte als Zahl oder Zahl mit Währung angeben.)',
+        normalize: (input) => {
+          const parsed = parseNumber(input);
+          if (parsed == null) {
+            return {
+              ok: false,
+              error: 'Ich konnte kein Budget erkennen. Bitte gib eine Zahl an (z. B. 500 oder 1.250,50).',
+            };
+          }
+          return { ok: true, value: parsed };
+        },
+      },
+      {
+        key: 'startDate',
+        label: 'Zeitraum (Start)',
+        prompt: 'Wann startet das Projekt? (Format z. B. 2024-05-01)',
+        normalize: (input) => validateDate(input),
+      },
+      {
+        key: 'endDate',
+        label: 'Zeitraum (Ende)',
+        prompt: 'Wann endet das Projekt? (Format z. B. 2024-10-31)',
+        normalize: (input) => validateDate(input),
+      },
+      {
+        key: 'contentLead',
+        label: 'Inhaltlich verantwortlich',
+        prompt: 'Wer ist inhaltlich verantwortlich? (Bitte den Notion-Namen oder @-Name angeben.)',
+        normalize: (input) => {
+          const cleaned = input.trim();
+          if (!cleaned) {
+            return { ok: false, error: 'Ich brauche eine verantwortliche Person. Versuche es bitte noch einmal.' };
+          }
+          return { ok: true, value: cleaned };
+        },
+      },
+      {
+        key: 'coordination',
+        label: 'Koordination',
+        prompt: 'Wer koordiniert das Projekt? (Bitte den Notion-Namen oder @-Name angeben.)',
+        normalize: (input) => {
+          const cleaned = input.trim();
+          if (!cleaned) {
+            return { ok: false, error: 'Ich brauche eine koordinierende Person. Versuche es bitte noch einmal.' };
+          }
+          return { ok: true, value: cleaned };
+        },
+      },
+      {
+        key: 'projectType',
+        label: 'Art des Projekts',
+        prompt: 'Welcher Projekttyp passt?',
+        type: 'button-select',
+        options: PROJECT_TYPE_OPTIONS,
+        normalize: (input) => normalizeProjectType(input),
+      },
+    ],
+    onedriveParentPathEnv: 'ONEDRIVE_PARENT_PATH',
+    databaseEnv: 'NOTION_DATABASE_ID',
+    placeholderBaseUrlEnv: 'ONEDRIVE_BASE_URL',
+  },
+  acquisition: {
+    key: 'acquisition',
+    command: '/newacquisition',
+    displayName: 'Akquise',
+    introLabel: 'Akquise-Dialog',
+    detailsLabel: 'Akquise-Details',
+    summaryHeading: 'Akquise-Details',
+    channelPrefix: 'akq',
+    channelLabel: 'Akquise-Channel',
+    prefixLetter: 'A',
+    questionFlow: [
+      {
+        key: 'acquisitionType',
+        label: 'Akquise-Typ',
+        prompt: 'Handelt es sich um eine Kundenakquise oder eine Forschungsprojekt-Akquise?',
+        type: 'button-select',
+        options: [
+          { label: 'Kundenakquise', value: 'customer' },
+          { label: 'Forschungsprojekt-Akquise', value: 'research' },
+        ],
+        variantSelector: true,
+        normalize: (input) => ({ ok: true, value: input.trim() }),
+      },
+    ],
+    onedriveParentPathEnv: 'ONEDRIVE_ACQ_PARENT_PATH',
+    placeholderBaseUrlEnv: 'ONEDRIVE_ACQ_BASE_URL',
+    defaultOnedriveParentPath: 'Internal_FloodWaive/00_Akquise',
+    defaultPlaceholderBaseUrl:
+      'https://floodwaivede-my.sharepoint.com/personal/hofmann_floodwaive_de/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fhofmann_floodwaive_de%2FDocuments%2FInternal_FloodWaive%2F00_Akquise&viewid=88fe7efd-76fe-444a-a788-50f2f07d09fd&ga=1',
+    variants: {
+      customer: {
+        variantKey: 'customer',
+        displayName: 'Kundenakquise',
+        summaryHeading: 'Akquise-Details',
+        prefixLetter: 'A',
+        questionFlow: [
+          {
+            key: 'projectName',
+            label: 'Akquise-Name',
+            prompt: 'Wie soll die Akquise heißen?',
+            normalize: (input) => {
+              const cleaned = input.trim();
+              if (!cleaned) {
+                return { ok: false, error: 'Ich brauche einen Namen. Versuch es bitte noch einmal.' };
+              }
+              return { ok: true, value: cleaned };
+            },
+          },
+          {
+            key: 'description',
+            label: 'Beschreibung',
+            prompt: 'Gib mir bitte eine kurze Beschreibung oder den Kontext.',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'contactStatus',
+            label: 'Status des Kontakts',
+            prompt: 'Welcher Status beschreibt die Akquise am besten?',
+            type: 'button-select',
+            options: ACQUISITION_STATUS_OPTIONS,
+            normalize: (input) => normalizeAcquisitionStatus(input),
+          },
+          {
+            key: 'owner',
+            label: 'Verantwortlich',
+            prompt: 'Wer verantwortet die Akquise? (Bitte den Notion-Namen oder @-Name angeben.)',
+            normalize: (input) => {
+              const cleaned = input.trim();
+              if (!cleaned) {
+                return { ok: false, error: 'Ich brauche eine verantwortliche Person. Versuch es bitte noch einmal.' };
+              }
+              return { ok: true, value: cleaned };
+            },
+          },
+          {
+            key: 'assignee',
+            label: 'Assignee',
+            prompt: 'Wer bearbeitet die Akquise? (Optional, Notion-Name oder @-Name)',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'dueDate',
+            label: 'Nächster Schritt bis',
+            prompt: 'Bis wann ist der nächste Schritt geplant? (Format 2024-05-01, optional)',
+            normalize: (input) => validateOptionalDate(input),
+          },
+        ],
+        notionProperties: ACQUISITION_NOTION_PROPERTIES,
+        databaseEnv: 'NOTION_ACQ_DATABASE_ID',
+        contextType: 'acquisition-customer',
+      },
+      research: {
+        variantKey: 'research',
+        displayName: 'Forschungsprojekt-Akquise',
+        summaryHeading: 'Forschungsprojekt-Akquise',
+        prefixLetter: 'A',
+        questionFlow: [
+          {
+            key: 'projectName',
+            label: 'Projektname',
+            prompt: 'Wie heißt das Forschungsprojekt?',
+            normalize: (input) => {
+              const cleaned = input.trim();
+              if (!cleaned) {
+                return { ok: false, error: 'Ich brauche einen Namen. Versuch es bitte noch einmal.' };
+              }
+              return { ok: true, value: cleaned };
+            },
+          },
+          {
+            key: 'acronym',
+            label: 'Akronym',
+            prompt: 'Welches Akronym nutzt ihr? (Optional)',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'summary',
+            label: 'Zusammenfassung',
+            prompt: 'Gib bitte eine kurze Zusammenfassung (optional).',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'description',
+            label: 'Projektbeschreibung',
+            prompt: 'Beschreibe kurz den Inhalt des Projekts (optional).',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'researchStatus',
+            label: 'Status',
+            prompt: 'Welcher Status beschreibt das Projekt?',
+            type: 'button-select',
+            options: RESEARCH_STATUS_OPTIONS,
+            normalize: (input) => normalizeResearchStatus(input),
+          },
+          {
+            key: 'leadPartner',
+            label: 'Lead-Partner',
+            prompt: 'Wer ist Lead-Partner?',
+            type: 'button-select',
+            options: RESEARCH_LEAD_PARTNER_OPTIONS,
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'partners',
+            label: 'Partner',
+            prompt: 'Welche Partner sind beteiligt? (Kommagetrennt, optional)',
+            normalize: (input) => ({ ok: true, value: input.trim() }),
+          },
+          {
+            key: 'owner',
+            label: 'Verantwortlich',
+            prompt: 'Wer verantwortet das Projekt? (Bitte den Notion-Namen oder @-Name angeben.)',
+            normalize: (input) => {
+              const cleaned = input.trim();
+              if (!cleaned) {
+                return { ok: false, error: 'Ich brauche eine verantwortliche Person. Versuch es bitte noch einmal.' };
+              }
+              return { ok: true, value: cleaned };
+            },
+          },
+          {
+            key: 'deadline',
+            label: 'Deadline',
+            prompt: 'Gibt es eine Deadline oder nächste Abgabe? (JJJJ-MM-TT, optional)',
+            normalize: (input) => validateOptionalDate(input),
+          },
+          {
+            key: 'startDate',
+            label: 'Zeitraum (Start)',
+            prompt: 'Wann startet das Projekt? (JJJJ-MM-TT, optional)',
+            normalize: (input) => validateOptionalDate(input),
+          },
+          {
+            key: 'endDate',
+            label: 'Zeitraum (Ende)',
+            prompt: 'Wann endet das Projekt? (JJJJ-MM-TT, optional)',
+            normalize: (input) => validateOptionalDate(input),
+          },
+          {
+            key: 'fundingRate',
+            label: 'Förderquote (%)',
+            prompt: 'Wie hoch ist die Förderquote in %? (optional)',
+            normalize: (input) => normalizeOptionalNumber(input),
+          },
+          {
+            key: 'totalVolume',
+            label: 'Gesamtvolumen (€)',
+            prompt: 'Wie hoch ist das Gesamtvolumen in €? (optional)',
+            normalize: (input) => normalizeOptionalNumber(input),
+          },
+          {
+            key: 'fwVolume',
+            label: 'FW-Volumen (€)',
+            prompt: 'Wie hoch ist das FW-Volumen in €? (optional)',
+            normalize: (input) => normalizeOptionalNumber(input),
+          },
+          {
+            key: 'links',
+            label: 'Links',
+            prompt: 'Gibt es einen relevanten Link (https://…)? (optional)',
+            normalize: (input) => normalizeOptionalUrl(input),
+          },
+        ],
+        notionProperties: RESEARCH_ACQ_PROPERTIES,
+        databaseEnv: 'NOTION_ACQ_RESEARCH_DATABASE_ID',
+        contextType: 'acquisition-research',
+      },
+    },
+  },
 };
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8']; // Julian & Adrian
@@ -54,79 +407,6 @@ const NOTION_SYSTEM_USER_NAMES = new Set(
   ].map((name) => name.trim().toLowerCase()),
 );
 
-const QUESTION_FLOW = [
-  {
-    key: 'projectName',
-    label: 'Projektname',
-    prompt: 'Wie soll das Projekt heißen?',
-    normalize: (input) => {
-      const cleaned = input.trim();
-      if (!cleaned) {
-        return { ok: false, error: 'Ich brauche einen Projektnamen. Versuch es bitte noch einmal.' };
-      }
-      return { ok: true, value: cleaned };
-    },
-  },
-  {
-    key: 'budget',
-    label: 'Budget',
-    prompt: 'Welches Budget ist eingeplant? (Bitte als Zahl oder Zahl mit Währung angeben.)',
-    normalize: (input) => {
-      const parsed = parseNumber(input);
-      if (parsed == null) {
-        return {
-          ok: false,
-          error: 'Ich konnte kein Budget erkennen. Bitte gib eine Zahl an (z. B. 500 oder 1.250,50).',
-        };
-      }
-      return { ok: true, value: parsed };
-    },
-  },
-  {
-    key: 'startDate',
-    label: 'Zeitraum (Start)',
-    prompt: 'Wann startet das Projekt? (Format z. B. 2024-05-01)',
-    normalize: (input) => validateDate(input),
-  },
-  {
-    key: 'endDate',
-    label: 'Zeitraum (Ende)',
-    prompt: 'Wann endet das Projekt? (Format z. B. 2024-10-31)',
-    normalize: (input) => validateDate(input),
-  },
-  {
-    key: 'contentLead',
-    label: 'Inhaltlich verantwortlich',
-    prompt: 'Wer ist inhaltlich verantwortlich? (Bitte den Notion-Namen oder @-Name angeben.)',
-    normalize: (input) => {
-      const cleaned = input.trim();
-      if (!cleaned) {
-        return { ok: false, error: 'Ich brauche eine verantwortliche Person. Versuche es bitte noch einmal.' };
-      }
-      return { ok: true, value: cleaned };
-    },
-  },
-  {
-    key: 'coordination',
-    label: 'Koordination',
-    prompt: 'Wer koordiniert das Projekt? (Bitte den Notion-Namen oder @-Name angeben.)',
-    normalize: (input) => {
-      const cleaned = input.trim();
-      if (!cleaned) {
-        return { ok: false, error: 'Ich brauche eine koordinierende Person. Versuche es bitte noch einmal.' };
-      }
-      return { ok: true, value: cleaned };
-    },
-  },
-  {
-    key: 'projectType',
-    label: 'Art des Projekts',
-    prompt: `Welcher Projekttyp passt?`,
-    type: 'projectType',
-    normalize: (input) => normalizeProjectType(input),
-  },
-];
-
 const sessionStore = new Map();
 
 const receiver = new AwsLambdaReceiver({
@@ -142,82 +422,175 @@ const notion =
   process.env.NOTION_TOKEN && process.env.NOTION_TOKEN.trim()
     ? new NotionClient({ auth: process.env.NOTION_TOKEN.trim() })
     : null;
-const notionDatabaseId = process.env.NOTION_DATABASE_ID?.trim().replace(/[^a-f0-9-]/gi, '');
+const defaultNotionDatabaseId = sanitizeDatabaseId(process.env.NOTION_DATABASE_ID);
 let cachedNotionUsers = null;
 
-app.command('/newproject', async ({ ack, command, respond, client, logger }) => {
-  await ack();
+Object.values(FLOW_CONFIGS).forEach((flowConfig) => {
+  registerFlowCommand(flowConfig);
+});
 
-  if (QUESTION_FLOW.length === 0) {
-    await respond({
-      response_type: 'ephemeral',
-      text: 'Es sind noch keine Fragen konfiguriert. Bitte hinterlegt zunächst die Notion-Attribute.',
-    });
-    return;
-  }
+function registerFlowCommand(flowConfig) {
+  app.command(flowConfig.command, async ({ ack, command, respond, client, logger }) => {
+    await ack();
 
-  if (!notion || !notionDatabaseId) {
-    await respond({
-      response_type: 'ephemeral',
-      text: 'Die Notion-Integration ist noch nicht konfiguriert. Bitte setzt `NOTION_TOKEN` und `NOTION_DATABASE_ID` in der Lambda-Umgebung.',
-    });
-    return;
-  }
-
-  const existingSession = sessionStore.get(command.user_id);
-  if (existingSession) {
-    await respond({
-      response_type: 'ephemeral',
-      text: 'Ich sammle bereits Angaben für dich. Bitte nutze den bestehenden Thread.',
-    });
-    return;
-  }
-
-  try {
-    const channel = command.channel_id;
-
-    let peopleHint = '';
-    try {
-      const notionUsers = await listNotionUsers();
-      const names = notionUsers.map((user) => user.name).filter(Boolean);
-      peopleHint = buildPeopleHint(names);
-    } catch (peopleError) {
-      logger.warn('Could not fetch Notion users for hint', peopleError);
+    const existingSession = sessionStore.get(command.user_id);
+    if (existingSession) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Ich sammle bereits Angaben für dich. Bitte nutze den bestehenden Thread.',
+      });
+      return;
     }
 
-    const session = {
-      userId: command.user_id,
-      channel,
-      threadTs: null,
-      stepIndex: 0,
-      answers: {},
-      peopleHint,
-    };
-    sessionStore.set(session.userId, session);
+    const flow = buildFlowRuntime(flowConfig);
 
-    await respond({
-      response_type: 'ephemeral',
-      text: 'Alles klar! Ich starte den Projektdialog gleich hier im Channel. Bitte antworte im Thread.',
-    });
+    if (!flow.questions?.length) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Es sind noch keine Fragen konfiguriert. Bitte hinterlegt zunächst die Notion-Attribute.',
+      });
+      return;
+    }
 
-    const introMessage = await client.chat.postMessage({
-      channel,
-      text: `Hey <@${command.user_id}>, lass uns die Projektdetails hier im Thread sammeln. Du kannst jederzeit mit \`stop\` abbrechen.`,
-    });
+    if (!notion) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Die Notion-Integration ist noch nicht konfiguriert. Bitte setzt die benötigten Umgebungsvariablen (Token & Datenbank-ID).',
+      });
+      return;
+    }
 
-    session.threadTs = introMessage.ts;
+    if (!flow.databaseId && !flow.variants) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Ich kenne die Notion-Datenbank für diesen Flow nicht. Bitte setzt `NOTION_DATABASE_ID` oder die spezifische Flow-Variable.',
+      });
+      return;
+    }
 
-    await sendQuestion(session, client);
-  } catch (error) {
-    logger.error('Failed to start onboarding session', error);
-    sessionStore.delete(command.user_id);
+    try {
+      const channel = command.channel_id;
 
-    await respond({
-      response_type: 'ephemeral',
-      text: getStartErrorMessage(error),
-    });
+      let peopleHint = '';
+      try {
+        const notionUsers = await listNotionUsers();
+        const names = notionUsers.map((user) => user.name).filter(Boolean);
+        peopleHint = buildPeopleHint(names);
+      } catch (peopleError) {
+        logger.warn('Could not fetch Notion users for hint', peopleError);
+      }
+
+      const session = {
+        userId: command.user_id,
+        channel,
+        threadTs: null,
+        stepIndex: 0,
+        answers: {},
+        peopleHint,
+        flow,
+      };
+      sessionStore.set(session.userId, session);
+
+      const introLabel = flow.introLabel || 'Dialog';
+      await respond({
+        response_type: 'ephemeral',
+        text: `Alles klar! Ich starte den ${introLabel} gleich hier im Channel. Bitte antworte im Thread.`,
+      });
+
+      const detailsLabel = flow.detailsLabel || 'Details';
+      const introMessage = await client.chat.postMessage({
+        channel,
+        text: `Hey <@${command.user_id}>, lass uns die ${detailsLabel} hier im Thread sammeln. Du kannst jederzeit mit \`stop\` abbrechen.`,
+      });
+
+      session.threadTs = introMessage.ts;
+
+      await sendQuestion(session, client);
+    } catch (error) {
+      logger.error('Failed to start onboarding session', error);
+      sessionStore.delete(command.user_id);
+
+      await respond({
+        response_type: 'ephemeral',
+        text: getStartErrorMessage(error),
+      });
+    }
+  });
+}
+
+function buildFlowRuntime(flowConfig) {
+  const runtime = {
+    ...flowConfig,
+    prefixLetter: flowConfig.prefixLetter || 'P',
+    questions: flowConfig.questionFlow ? flowConfig.questionFlow.map((q) => ({ ...q })) : [],
+    notionProperties: flowConfig.notionProperties || NOTION_PROPERTIES,
+  };
+
+  runtime.onedriveParentPath = resolveParentPath(flowConfig);
+  runtime.placeholderBaseUrl = resolvePlaceholderBase(flowConfig, runtime.onedriveParentPath);
+  runtime.databaseId = resolveDatabaseId(flowConfig);
+  runtime.variants = flowConfig.variants || null;
+  runtime.rawConfig = flowConfig;
+  runtime.contextType = flowConfig.contextType || flowConfig.key;
+  return runtime;
+}
+
+function resolveParentPath(config) {
+  return (
+    (config.onedriveParentPathEnv && process.env[config.onedriveParentPathEnv]?.trim()) ||
+    config.defaultOnedriveParentPath ||
+    process.env.ONEDRIVE_PARENT_PATH?.trim() ||
+    undefined
+  );
+}
+
+function activateVariantFlow(baseFlow, variantKey) {
+  const variantDefinitions = baseFlow.variants;
+  if (!variantDefinitions) {
+    return null;
   }
-});
+  const variantConfig = variantDefinitions[variantKey];
+  if (!variantConfig) {
+    return null;
+  }
+
+  const mergedConfig = {
+    ...baseFlow.rawConfig,
+    ...variantConfig,
+    command: baseFlow.command,
+    channelPrefix: variantConfig.channelPrefix || baseFlow.channelPrefix,
+    channelLabel: variantConfig.channelLabel || baseFlow.channelLabel,
+    summaryHeading: variantConfig.summaryHeading || baseFlow.summaryHeading,
+    introLabel: variantConfig.introLabel || baseFlow.introLabel,
+    detailsLabel: variantConfig.detailsLabel || baseFlow.detailsLabel,
+    displayName: variantConfig.displayName || baseFlow.displayName,
+    prefixLetter: variantConfig.prefixLetter || baseFlow.prefixLetter,
+    contextType: variantConfig.contextType || baseFlow.contextType || baseFlow.key,
+  };
+
+  const runtime = buildFlowRuntime(mergedConfig);
+  runtime.variants = null;
+  runtime.variantKey = variantKey;
+  runtime.rawConfig = mergedConfig;
+  return runtime;
+}
+
+function resolvePlaceholderBase(config, parentPath) {
+  return (
+    (config.placeholderBaseUrlEnv && process.env[config.placeholderBaseUrlEnv]?.trim()) ||
+    config.defaultPlaceholderBaseUrl ||
+    process.env.ONEDRIVE_BASE_URL ||
+    (parentPath
+      ? `https://onedrive-placeholder.local/${encodeURIComponent(parentPath.replace(/\//g, '_'))}`
+      : 'https://onedrive-placeholder.local/folders')
+  );
+}
+
+function resolveDatabaseId(config) {
+  const fromEnv = config.databaseEnv && sanitizeDatabaseId(process.env[config.databaseEnv]);
+  const fallback = sanitizeDatabaseId(config.databaseId);
+  return fromEnv || fallback || defaultNotionDatabaseId || '';
+}
 
 app.event('message', async ({ event, client, logger }) => {
   if (event.subtype || event.bot_id) {
@@ -265,7 +638,7 @@ app.event('message', async ({ event, client, logger }) => {
     await client.chat.postMessage({
       channel: session.channel,
       thread_ts: session.threadTs,
-      text: 'Alles klar, ich habe den Flow abgebrochen. Starte ihn jederzeit neu mit `/newproject`.',
+      text: `Alles klar, ich habe den Flow abgebrochen. Starte ihn jederzeit neu mit \`${session.flow?.command ?? '/newproject'}\`.`,
     });
     return;
   }
@@ -273,7 +646,7 @@ app.event('message', async ({ event, client, logger }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
-app.action(/project_type_option_.+/, async ({ ack, body, action, client, logger }) => {
+app.action(/.+_option_\d+$/, async ({ ack, body, action, client, logger }) => {
   await ack();
   const userId = body.user?.id;
   if (!userId) {
@@ -306,64 +679,196 @@ app.error((error) => {
   console.error('Slack Bolt error', error);
 });
 
-async function createNotionProject(answers) {
-  if (!notion || !notionDatabaseId) {
+async function createNotionProject(answers, flow) {
+  if (!notion || !flow?.databaseId) {
     throw new Error('Notion client oder Datenbank-ID fehlen');
   }
 
-  if (answers.startDate && answers.endDate && answers.endDate < answers.startDate) {
-    throw new Error('Das Enddatum liegt vor dem Startdatum');
-  }
-
   const unresolvedPeople = [];
-
-  const [contentLeadPeople, coordinationPeople] = await Promise.all([
-    resolvePersonProperty(answers.contentLead, 'Inhaltlich verantwortlich', unresolvedPeople),
-    resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
-  ]);
-
+  const prefixLetter = flow?.prefixLetter || 'P';
   const { prefixedTitle, prefix, channelSlug, sanitizedBase } = await buildPrefixedTitle(
     answers.projectName,
+    { prefixLetter, databaseId: flow.databaseId },
   );
 
-  const onedriveUrl = await ensureOnedriveFolder(prefixedTitle);
+  const onedriveUrl = await ensureOnedriveFolder(prefixedTitle, {
+    parentPath: flow?.onedriveParentPath,
+    baseUrl: flow?.placeholderBaseUrl,
+  });
 
-  const properties = {
-    [NOTION_PROPERTIES.title]: {
-      title: [
-        {
-          text: { content: prefixedTitle },
-        },
-      ],
-    },
-    [NOTION_PROPERTIES.budget]: {
-      number: answers.budget ?? null,
-    },
-    [NOTION_PROPERTIES.timeframe]: {
-      date: {
-        start: answers.startDate,
-        end: answers.endDate,
+  let properties = {};
+  const context = flow?.contextType || flow?.key;
+
+  if (context === 'acquisition-research') {
+    const researchProps = flow.notionProperties || RESEARCH_ACQ_PROPERTIES;
+    const [ownerPeople] = await Promise.all([
+      resolvePersonProperty(answers.owner, 'Verantwortlich', unresolvedPeople),
+    ]);
+
+    properties = {
+      [researchProps.title]: {
+        title: [
+          {
+            text: { content: prefixedTitle },
+          },
+        ],
       },
-    },
-    [NOTION_PROPERTIES.projectType]: {
-      select: { name: answers.projectType },
-    },
-    [NOTION_PROPERTIES.contentLead]: {
-      people: contentLeadPeople,
-    },
-    [NOTION_PROPERTIES.coordination]: {
-      people: coordinationPeople,
-    },
-  };
+    };
 
-  if (onedriveUrl && NOTION_PROPERTIES.onedrive) {
-    properties[NOTION_PROPERTIES.onedrive] = {
+    if (researchProps.acronym) {
+      properties[researchProps.acronym] = { rich_text: toRichText(answers.acronym) };
+    }
+    if (researchProps.summary) {
+      properties[researchProps.summary] = { rich_text: toRichText(answers.summary) };
+    }
+    if (researchProps.description) {
+      properties[researchProps.description] = { rich_text: toRichText(answers.description) };
+    }
+    if (researchProps.status) {
+      properties[researchProps.status] = {
+        status: answers.researchStatus ? { name: answers.researchStatus } : null,
+      };
+    }
+    if (researchProps.leadPartner) {
+      properties[researchProps.leadPartner] = {
+        select: answers.leadPartner ? { name: answers.leadPartner } : null,
+      };
+    }
+    if (researchProps.partners) {
+      properties[researchProps.partners] = {
+        multi_select: buildMultiSelectValues(answers.partners),
+      };
+    }
+    if (researchProps.verantwortliche) {
+      properties[researchProps.verantwortliche] = {
+        people: ownerPeople,
+      };
+    }
+    if (researchProps.deadline) {
+      properties[researchProps.deadline] = {
+        date: answers.deadline ? { start: answers.deadline } : null,
+      };
+    }
+    if (researchProps.timeframe) {
+      properties[researchProps.timeframe] = {
+        date:
+          answers.startDate || answers.endDate
+            ? {
+                start: answers.startDate || null,
+                end: answers.endDate || null,
+              }
+            : null,
+      };
+    }
+    if (researchProps.fundingRate) {
+      properties[researchProps.fundingRate] = {
+        number: answers.fundingRate ?? null,
+      };
+    }
+    if (researchProps.totalVolume) {
+      properties[researchProps.totalVolume] = {
+        number: answers.totalVolume ?? null,
+      };
+    }
+    if (researchProps.fwVolume) {
+      properties[researchProps.fwVolume] = {
+        number: answers.fwVolume ?? null,
+      };
+    }
+    if (researchProps.links) {
+      properties[researchProps.links] = {
+        url: answers.links || null,
+      };
+    }
+  } else if (context === 'acquisition-customer' || context === 'acquisition') {
+    const acquisitionProps = flow.notionProperties || ACQUISITION_NOTION_PROPERTIES;
+    const [ownerPeople, assigneePeople] = await Promise.all([
+      resolvePersonProperty(answers.owner, 'Verantwortlich', unresolvedPeople),
+      resolvePersonProperty(answers.assignee, 'Assignee', unresolvedPeople),
+    ]);
+
+    properties = {
+      [acquisitionProps.title]: {
+        title: [
+          {
+            text: { content: prefixedTitle },
+          },
+        ],
+      },
+    };
+
+    if (acquisitionProps.description) {
+      properties[acquisitionProps.description] = { rich_text: toRichText(answers.description) };
+    }
+    if (acquisitionProps.status) {
+      properties[acquisitionProps.status] = {
+        select: answers.contactStatus ? { name: answers.contactStatus } : null,
+      };
+    }
+    if (acquisitionProps.owner) {
+      properties[acquisitionProps.owner] = {
+        people: ownerPeople,
+      };
+    }
+    if (acquisitionProps.assignee) {
+      properties[acquisitionProps.assignee] = {
+        people: assigneePeople,
+      };
+    }
+    if (acquisitionProps.due) {
+      properties[acquisitionProps.due] = {
+        date: answers.dueDate ? { start: answers.dueDate } : null,
+      };
+    }
+  } else {
+    if (answers.startDate && answers.endDate && answers.endDate < answers.startDate) {
+      throw new Error('Das Enddatum liegt vor dem Startdatum');
+    }
+
+    const projectProps = flow?.notionProperties || NOTION_PROPERTIES;
+    const [contentLeadPeople, coordinationPeople] = await Promise.all([
+      resolvePersonProperty(answers.contentLead, 'Inhaltlich verantwortlich', unresolvedPeople),
+      resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
+    ]);
+
+    properties = {
+      [projectProps.title]: {
+        title: [
+          {
+            text: { content: prefixedTitle },
+          },
+        ],
+      },
+      [projectProps.budget]: {
+        number: answers.budget ?? null,
+      },
+      [projectProps.timeframe]: {
+        date: {
+          start: answers.startDate,
+          end: answers.endDate,
+        },
+      },
+      [projectProps.projectType]: {
+        select: { name: answers.projectType },
+      },
+      [projectProps.contentLead]: {
+        people: contentLeadPeople,
+      },
+      [projectProps.coordination]: {
+        people: coordinationPeople,
+      },
+    };
+  }
+
+  const onedrivePropertyName = flow?.notionProperties?.onedrive || NOTION_PROPERTIES.onedrive;
+  if (onedriveUrl && onedrivePropertyName) {
+    properties[onedrivePropertyName] = {
       url: onedriveUrl,
     };
   }
 
   const response = await notion.pages.create({
-    parent: { database_id: notionDatabaseId },
+    parent: { database_id: flow.databaseId },
     properties,
   });
 
@@ -397,6 +902,14 @@ function validateDate(input) {
   return { ok: true, value: cleaned };
 }
 
+function validateOptionalDate(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return { ok: true, value: null };
+  }
+  return validateDate(cleaned);
+}
+
 function normalizeProjectType(input) {
   const cleaned = input.trim();
   if (!cleaned) {
@@ -419,6 +932,77 @@ function normalizeProjectType(input) {
   }
 
   return { ok: true, value: canonical };
+}
+
+function normalizeAcquisitionStatus(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${ACQUISITION_STATUS_OPTIONS.join(', ')}`,
+    };
+  }
+  const match = ACQUISITION_STATUS_OPTIONS.find(
+    (option) => option.toLowerCase() === cleaned.toLowerCase(),
+  );
+  if (!match) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${ACQUISITION_STATUS_OPTIONS.join(', ')}`,
+    };
+  }
+  return { ok: true, value: match };
+}
+
+function normalizeResearchStatus(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${RESEARCH_STATUS_OPTIONS.join(', ')}`,
+    };
+  }
+  const match = RESEARCH_STATUS_OPTIONS.find(
+    (option) => option.toLowerCase() === cleaned.toLowerCase(),
+  );
+  if (!match) {
+    return {
+      ok: false,
+      error: `Bitte wähle eine der Optionen: ${RESEARCH_STATUS_OPTIONS.join(', ')}`,
+    };
+  }
+  return { ok: true, value: match };
+}
+
+function normalizeOptionalNumber(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return { ok: true, value: null };
+  }
+  const parsed = parseNumber(cleaned);
+  if (parsed == null) {
+    return {
+      ok: false,
+      error: 'Ich konnte keine Zahl erkennen. Bitte gib eine Zahl an oder lasse das Feld leer.',
+    };
+  }
+  return { ok: true, value: parsed };
+}
+
+function normalizeOptionalUrl(input) {
+  const cleaned = input.trim();
+  if (!cleaned) {
+    return { ok: true, value: null };
+  }
+  try {
+    const url = new URL(cleaned);
+    return { ok: true, value: url.toString() };
+  } catch {
+    return {
+      ok: false,
+      error: 'Das sieht nicht nach einer gültigen URL aus. Bitte nutze das Format https://…',
+    };
+  }
 }
 
 function parseNumber(rawValue) {
@@ -468,17 +1052,21 @@ function formatNumber(value) {
   }).format(value);
 }
 
-async function buildPrefixedTitle(baseName) {
+async function buildPrefixedTitle(baseName, options = {}) {
+  if (!options.databaseId) {
+    throw new Error('Notion-Datenbank-ID fehlt für die Präfix-Ermittlung');
+  }
   const sanitizedBase = sanitizeTitle(stripExistingPrefix(baseName));
   const yearSuffix = String(new Date().getFullYear()).slice(-2);
-  const matcher = new RegExp(`^P[_-]?${yearSuffix}(\\d{3})`, 'i');
+  const prefixLetter = options.prefixLetter || 'P';
+  const matcher = new RegExp(`^${prefixLetter}[_-]?${yearSuffix}(\\d{3})`, 'i');
 
   let cursor;
   let maxSequence = 0;
 
   do {
     const response = await notion.databases.query({
-      database_id: notionDatabaseId,
+      database_id: options.databaseId,
       start_cursor: cursor,
       page_size: 100,
     });
@@ -508,7 +1096,7 @@ async function buildPrefixedTitle(baseName) {
 
   const nextSequence = maxSequence + 1;
   const sequenceStr = String(nextSequence).padStart(3, '0');
-  const prefix = `P${yearSuffix}${sequenceStr}_`;
+  const prefix = `${prefixLetter}${yearSuffix}${sequenceStr}_`;
   const prefixedTitle = `${prefix}${sanitizedBase}`;
   const channelSlug = buildChannelSlug(sanitizedBase);
 
@@ -520,7 +1108,7 @@ function stripExistingPrefix(name) {
   if (!trimmed) {
     return 'Unbenanntes Projekt';
   }
-  const withoutPrefix = trimmed.replace(/^P[_-]?\d{5}[_\s-]*/i, '');
+  const withoutPrefix = trimmed.replace(/^[A-Z][_ -]?\d{5}[_\s-]*/i, '');
   const normalized = withoutPrefix.replace(/^_+/, '').trim();
   return normalized || 'Unbenanntes Projekt';
 }
@@ -529,6 +1117,13 @@ function sanitizeTitle(name) {
   const replaced = (name ?? '').replace(/\s+/g, '_');
   const collapsed = replaced.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
   return collapsed || 'Projekt';
+}
+
+function sanitizeDatabaseId(raw) {
+  if (!raw) {
+    return '';
+  }
+  return raw.trim().replace(/[^a-f0-9]/gi, '');
 }
 
 function buildChannelSlug(sanitizedBase) {
@@ -563,28 +1158,61 @@ function buildPeopleHint(names) {
 }
 
 function needsPeopleHint(questionKey) {
-  return questionKey === 'contentLead' || questionKey === 'coordination';
+  return (
+    questionKey === 'contentLead' ||
+    questionKey === 'coordination' ||
+    questionKey === 'owner' ||
+    questionKey === 'assignee'
+  );
 }
 
 function isSystemNotionUser(name) {
   return NOTION_SYSTEM_USER_NAMES.has(name?.trim().toLowerCase());
 }
 
+function buildActionId(questionKey, index) {
+  return `${questionKey}_option_${index}`;
+}
+
+function toRichText(value) {
+  const text = (value ?? '').trim();
+  if (!text) {
+    return [];
+  }
+  return [
+    {
+      type: 'text',
+      text: { content: text },
+    },
+  ];
+}
+
+function buildMultiSelectValues(rawValue) {
+  if (!rawValue) {
+    return [];
+  }
+  return rawValue
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((name) => ({ name }));
+}
+
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
 let graphTokenCache = null;
 
-async function ensureOnedriveFolder(folderName) {
+async function ensureOnedriveFolder(folderName, options = {}) {
   if (!folderName) {
     return null;
   }
 
-  const baseUrl = process.env.ONEDRIVE_BASE_URL || 'https://onedrive-placeholder.local/folders';
+  const baseUrl = options.baseUrl || process.env.ONEDRIVE_BASE_URL || 'https://onedrive-placeholder.local/folders';
   const graphConfig = {
     clientId: process.env.ONEDRIVE_CLIENT_ID?.trim(),
     clientSecret: process.env.ONEDRIVE_CLIENT_SECRET?.trim(),
     tenantId: process.env.ONEDRIVE_TENANT_ID?.trim(),
     driveId: process.env.ONEDRIVE_DRIVE_ID?.trim(),
-    parentPath: process.env.ONEDRIVE_PARENT_PATH?.trim(),
+    parentPath: options.parentPath ?? process.env.ONEDRIVE_PARENT_PATH?.trim(),
   };
 
   if (!graphConfig.clientId || !graphConfig.clientSecret || !graphConfig.tenantId || !graphConfig.driveId) {
@@ -745,7 +1373,8 @@ async function ensureGraphShareLink({ driveId, itemId, token }) {
 }
 
 async function sendQuestion(session, client) {
-  const question = QUESTION_FLOW[session.stepIndex];
+  const questions = session.flow?.questions ?? [];
+  const question = questions[session.stepIndex];
   if (!question) {
     return;
   }
@@ -755,7 +1384,7 @@ async function sendQuestion(session, client) {
     text = `${text}\nVerfügbare Personen: ${session.peopleHint}`;
   }
 
-  if (question.type === 'projectType') {
+  if (question.type === 'button-select' && Array.isArray(question.options)) {
     await client.chat.postMessage({
       channel: session.channel,
       thread_ts: session.threadTs,
@@ -767,12 +1396,16 @@ async function sendQuestion(session, client) {
         },
         {
           type: 'actions',
-          elements: PROJECT_TYPE_OPTIONS.map((option, index) => ({
-            type: 'button',
-            text: { type: 'plain_text', text: option, emoji: true },
-            value: option,
-            action_id: `project_type_option_${index}`,
-          })),
+          elements: question.options.map((option, index) => {
+            const optionLabel = typeof option === 'string' ? option : option.label;
+            const optionValue = typeof option === 'string' ? option : option.value;
+            return {
+              type: 'button',
+              text: { type: 'plain_text', text: optionLabel, emoji: true },
+              value: optionValue,
+              action_id: buildActionId(question.key, index),
+            };
+          }),
         },
       ],
     });
@@ -787,7 +1420,8 @@ async function sendQuestion(session, client) {
 }
 
 async function processAnswer(session, rawAnswer, client, logger) {
-  const question = QUESTION_FLOW[session.stepIndex];
+  const questions = session.flow?.questions ?? [];
+  const question = questions[session.stepIndex];
   if (!question) {
     return;
   }
@@ -805,10 +1439,38 @@ async function processAnswer(session, rawAnswer, client, logger) {
     return;
   }
 
+  if (question.variantSelector) {
+    const variantKey = normalized.value;
+    const variantFlow = activateVariantFlow(session.flow, variantKey);
+    if (!variantFlow) {
+      await client.chat.postMessage({
+        channel: session.channel,
+        thread_ts: session.threadTs,
+        text: 'Diesen Akquise-Typ kenne ich nicht. Bitte wähle eine der angezeigten Optionen.',
+      });
+      return;
+    }
+    if (!variantFlow.databaseId) {
+      await client.chat.postMessage({
+        channel: session.channel,
+        thread_ts: session.threadTs,
+        text: 'Für diesen Akquise-Typ ist noch keine Notion-Datenbank konfiguriert. Bitte setze die passende Umgebungsvariable und versuche es erneut.',
+      });
+      sessionStore.delete(session.userId);
+      return;
+    }
+
+    session.answers[question.key] = variantKey;
+    session.flow = variantFlow;
+    session.stepIndex = 0;
+    await sendQuestion(session, client);
+    return;
+  }
+
   session.answers[question.key] = normalized.value;
   session.stepIndex += 1;
 
-  if (session.stepIndex < QUESTION_FLOW.length) {
+  if (session.stepIndex < questions.length) {
     await sendQuestion(session, client);
     return;
   }
@@ -818,7 +1480,8 @@ async function processAnswer(session, rawAnswer, client, logger) {
 
 async function finalizeSession(session, client, logger) {
   try {
-    const notionResult = await createNotionProject(session.answers);
+    const flow = session.flow;
+    const notionResult = await createNotionProject(session.answers, session.flow);
     if (notionResult?.title) {
       session.answers.prefixedProjectName = notionResult.title;
       session.answers.projectCode = notionResult.prefix;
@@ -827,17 +1490,28 @@ async function finalizeSession(session, client, logger) {
       session.answers.channelSlug = notionResult.channelSlug;
     }
 
-    const summary = QUESTION_FLOW.map(({ label, key }) => {
-      const value =
-        key === 'projectName'
-          ? session.answers.prefixedProjectName ?? session.answers[key]
-          : session.answers[key];
-      const displayValue = typeof value === 'number' ? formatNumber(value) : value;
-      return `• ${label}: ${displayValue}`;
-    }).join('\n');
+    const questions = flow?.questions ?? [];
+    const summary = questions
+      .map(({ label, key }) => {
+        const value =
+          key === 'projectName'
+            ? session.answers.prefixedProjectName ?? session.answers[key]
+            : session.answers[key];
+        const displayValue =
+          typeof value === 'number'
+            ? formatNumber(value)
+            : value && typeof value === 'string'
+              ? value || '—'
+              : value ?? '—';
+        return `• ${label}: ${displayValue || '—'}`;
+      })
+      .join('\n');
     const followUp = notionResult?.url ?? 'Ich konnte keine Notion-Seite verlinken. Bitte prüfe die Logs für Details.';
 
-    const messageLines = ['Danke! Ich habe alle Angaben gesammelt:', summary, ''];
+    const heading = flow?.summaryHeading
+      ? `Danke! Hier sind die ${flow.summaryHeading}:`
+      : 'Danke! Ich habe alle Angaben gesammelt:';
+    const messageLines = [heading, summary, ''];
 
     if (notionResult?.onedriveUrl) {
       messageLines.push(`OneDrive-Ordner: ${notionResult.onedriveUrl}`, '');
@@ -845,27 +1519,28 @@ async function finalizeSession(session, client, logger) {
 
     messageLines.push(followUp);
 
-    let projectChannelInfo;
+    let flowChannelInfo;
     try {
       if (notionResult?.channelSlug) {
-        projectChannelInfo = await ensureProjectChannel({
+        flowChannelInfo = await ensureFlowChannel({
           client,
           slug: notionResult.channelSlug,
           userId: session.userId,
           logger,
+          channelPrefix: flow?.channelPrefix || 'prj',
         });
       }
     } catch (channelError) {
       logger.error('Failed to ensure project channel', channelError);
       messageLines.push(
         '',
-        'Hinweis: Der Projekt-Channel konnte nicht erstellt werden. Bitte prüfe meine Slack-Berechtigungen (benötigt `channels:manage` und `channels:read`).',
+        `Hinweis: Der ${flow?.channelLabel ?? 'Projekt-Channel'} konnte nicht erstellt werden. Bitte prüfe meine Slack-Berechtigungen (benötigt \`channels:manage\` und \`channels:read\`).`,
       );
     }
 
-    if (projectChannelInfo?.id) {
-      const mention = `<#${projectChannelInfo.id}|${projectChannelInfo.name}>`;
-      const infoText = projectChannelInfo.created
+    if (flowChannelInfo?.id) {
+      const mention = `<#${flowChannelInfo.id}|${flowChannelInfo.name}>`;
+      const infoText = flowChannelInfo.created
         ? `Ich habe den Channel ${mention} erstellt und dich hinzugefügt.`
         : `Channel ${mention} existiert bereits; ich habe dich hinzugefügt (falls nötig).`;
       messageLines.push('', infoText);
@@ -887,10 +1562,20 @@ async function finalizeSession(session, client, logger) {
       text: summaryMessage,
     });
 
-    if (projectChannelInfo?.created && projectChannelInfo.id) {
+    if (flowChannelInfo?.id && (notionResult?.url || notionResult?.onedriveUrl)) {
+      await updateProjectChannelDescription({
+        client,
+        channelId: flowChannelInfo.id,
+        notionUrl: notionResult?.url,
+        onedriveUrl: notionResult?.onedriveUrl,
+        logger,
+      });
+    }
+
+    if (flowChannelInfo?.created && flowChannelInfo.id) {
       try {
         await client.chat.postMessage({
-          channel: projectChannelInfo.id,
+          channel: flowChannelInfo.id,
           text: summaryMessage,
         });
       } catch (channelMessageError) {
@@ -920,8 +1605,9 @@ async function finalizeSession(session, client, logger) {
   }
 }
 
-async function ensureProjectChannel({ client, slug, userId, logger }) {
-  const channelName = `prj_${slug}`;
+async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }) {
+  const safePrefix = channelPrefix || 'prj';
+  const channelName = `${safePrefix}_${slug}`;
   const membersToInvite = buildProjectChannelMembers(userId);
   try {
     const createResult = await client.conversations.create({
@@ -960,6 +1646,41 @@ async function findChannelByName(client, name) {
     cursor = response.response_metadata?.next_cursor;
   } while (cursor);
   return null;
+}
+
+async function updateProjectChannelDescription({ client, channelId, notionUrl, onedriveUrl, logger }) {
+  const lines = [];
+  if (notionUrl) {
+    lines.push(`Notion: ${notionUrl}`);
+  }
+  if (onedriveUrl) {
+    lines.push(`OneDrive: ${onedriveUrl}`);
+  }
+  if (!lines.length) {
+    return;
+  }
+
+  const topic = truncateSlackField(lines.join(' | '));
+  const purpose = truncateSlackField(lines.join('\n'));
+
+  try {
+    await client.conversations.setTopic({ channel: channelId, topic });
+  } catch (error) {
+    logger?.warn?.('Failed to set channel topic', { channelId, error: error.data?.error });
+  }
+
+  try {
+    await client.conversations.setPurpose({ channel: channelId, purpose });
+  } catch (error) {
+    logger?.warn?.('Failed to set channel purpose', { channelId, error: error.data?.error });
+  }
+}
+
+function truncateSlackField(text, limit = 250) {
+  if (!text) {
+    return '';
+  }
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
 }
 
 async function inviteUsersToChannel(client, channelId, userIds, logger) {
