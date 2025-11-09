@@ -870,11 +870,24 @@ async function finalizeSession(session, client, logger) {
       );
     }
 
+    const summaryMessage = messageLines.join('\n');
+
     await client.chat.postMessage({
       channel: session.channel,
       thread_ts: session.threadTs,
-      text: messageLines.join('\n'),
+      text: summaryMessage,
     });
+
+    if (projectChannelInfo?.created && projectChannelInfo.id) {
+      try {
+        await client.chat.postMessage({
+          channel: projectChannelInfo.id,
+          text: summaryMessage,
+        });
+      } catch (channelMessageError) {
+        logger.warn('Failed to post summary in newly created project channel', channelMessageError);
+      }
+    }
   } catch (error) {
     logger.error('Failed to create Notion project', error);
     console.error('Notion error details:', JSON.stringify(safeError(error), null, 2));
