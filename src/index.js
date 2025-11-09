@@ -27,6 +27,7 @@ const NOTION_PROPERTIES = {
   contentLead: 'Inhaltlich',
   coordination: 'Koordination',
   projectType: 'Art',
+  onedrive: 'OneDrive',
 };
 
 const QUESTION_FLOW = [
@@ -301,6 +302,8 @@ async function createNotionProject(answers) {
     answers.projectName,
   );
 
+  const onedriveUrl = await ensureOnedriveFolder(prefixedTitle);
+
   const properties = {
     [NOTION_PROPERTIES.title]: {
       title: [
@@ -329,6 +332,12 @@ async function createNotionProject(answers) {
     },
   };
 
+  if (onedriveUrl && NOTION_PROPERTIES.onedrive) {
+    properties[NOTION_PROPERTIES.onedrive] = {
+      url: onedriveUrl,
+    };
+  }
+
   const response = await notion.pages.create({
     parent: { database_id: notionDatabaseId },
     properties,
@@ -341,6 +350,7 @@ async function createNotionProject(answers) {
     prefix,
     channelSlug,
     sanitizedBase,
+    onedriveUrl,
   };
 }
 
@@ -509,12 +519,146 @@ function buildPeopleHint(names) {
   if (!names?.length) {
     return '';
   }
-  const display = names.slice(0, 8).join(', ');
-  return names.length > 8 ? `${display}, …` : display;
+  return names.join(', ');
 }
 
 function needsPeopleHint(questionKey) {
   return questionKey === 'contentLead' || questionKey === 'coordination';
+}
+
+const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
+let graphTokenCache = null;
+
+async function ensureOnedriveFolder(folderName) {
+  if (!folderName) {
+    return null;
+  }
+
+  const baseUrl = process.env.ONEDRIVE_BASE_URL || 'https://onedrive-placeholder.local/folders';
+  const graphConfig = {
+    clientId: process.env.ONEDRIVE_CLIENT_ID?.trim(),
+    clientSecret: process.env.ONEDRIVE_CLIENT_SECRET?.trim(),
+    tenantId: process.env.ONEDRIVE_TENANT_ID?.trim(),
+    driveId: process.env.ONEDRIVE_DRIVE_ID?.trim(),
+    parentPath: process.env.ONEDRIVE_PARENT_PATH?.trim(),
+  };
+
+  if (!graphConfig.clientId || !graphConfig.clientSecret || !graphConfig.tenantId || !graphConfig.driveId) {
+    const placeholderUrl = buildPlaceholderUrl(baseUrl, folderName);
+    console.warn('OneDrive Graph config incomplete. Using placeholder URL.', {
+      missing: Object.entries(graphConfig)
+        .filter(([key, value]) => !value && key !== 'parentPath')
+        .map(([key]) => key),
+    });
+    return placeholderUrl;
+  }
+
+  try {
+    const token = await getGraphAccessToken(graphConfig);
+    const folder = await createGraphFolder({
+      driveId: graphConfig.driveId,
+      folderName,
+      parentPath: graphConfig.parentPath,
+      token,
+    });
+    if (folder?.webUrl) {
+      console.log('OneDrive folder created via Graph API:', folder.webUrl);
+      return folder.webUrl;
+    }
+    throw new Error('Graph response missing webUrl');
+  } catch (error) {
+    console.error('Failed to create OneDrive folder via Graph API, falling back to placeholder.', error);
+    return buildPlaceholderUrl(baseUrl, folderName);
+  }
+}
+
+function buildPlaceholderUrl(baseUrl, folderName) {
+  const normalizedBase = baseUrl.replace(/\/$/, '');
+  return `${normalizedBase}/${encodeURIComponent(folderName)}`;
+}
+
+async function getGraphAccessToken(config) {
+  const now = Date.now();
+  if (graphTokenCache && graphTokenCache.expiresAt > now + 60_000) {
+    return graphTokenCache.token;
+  }
+
+  const params = new URLSearchParams({
+    grant_type: 'client_credentials',
+    client_id: config.clientId,
+    client_secret: config.clientSecret,
+    scope: GRAPH_SCOPE,
+  });
+
+  const tokenUrl = `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/token`;
+  const response = await fetch(tokenUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params,
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph token request failed (${response.status}): ${details}`);
+  }
+
+  const payload = await response.json();
+  const expiresIn = Number(payload.expires_in) || 300;
+  graphTokenCache = {
+    token: payload.access_token,
+    expiresAt: now + expiresIn * 1000,
+  };
+  return payload.access_token;
+}
+
+async function createGraphFolder({ driveId, folderName, parentPath, token }) {
+  const encodedParent = parentPath ? encodeDrivePath(parentPath) : null;
+  const path = encodedParent ? `root:/${encodedParent}:/children` : 'root/children';
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/${path}`;
+  const body = {
+    name: folderName,
+    folder: {},
+    '@microsoft.graph.conflictBehavior': 'fail',
+  };
+
+  let response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 409) {
+    // Folder exists -> fetch existing item
+    const lookupUrl = buildExistingFolderUrl(driveId, parentPath, folderName);
+    response = await fetch(lookupUrl, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph folder request failed (${response.status}): ${details}`);
+  }
+
+  return response.json();
+}
+
+function encodeDrivePath(path) {
+  return path
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+function buildExistingFolderUrl(driveId, parentPath, folderName) {
+  const combined = parentPath ? `${parentPath.replace(/\/$/, '')}/${folderName}` : folderName;
+  const encoded = encodeDrivePath(combined);
+  return `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encoded}`;
 }
 
 async function sendQuestion(session, client) {
