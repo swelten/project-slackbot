@@ -1046,7 +1046,13 @@ async function buildPrefixedTitle(baseName, options = {}) {
     throw new Error('Notion-Datenbank-ID fehlt für die Präfix-Ermittlung');
   }
   const stripped = stripExistingPrefix(baseName);
-  const sanitizedBase = stripped.trim() ? sanitizeTitle(stripped) : sanitizeTitle(baseName);
+  const baseForSanitizing =
+    stripped && stripped.toLowerCase() !== 'unbenanntes projekt'
+      ? stripped
+      : baseName?.trim()
+        ? baseName
+        : 'Projekt';
+  const sanitizedBase = sanitizeTitle(baseForSanitizing);
   const yearSuffix = String(new Date().getFullYear()).slice(-2);
   const prefixLetter = options.prefixLetter || 'P';
   const matcher = new RegExp(`^${prefixLetter}[_-]?${yearSuffix}(\\d{3})`, 'i');
@@ -1602,7 +1608,7 @@ async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }
   try {
     const createResult = await client.conversations.create({
       name: channelName,
-      is_private: true,
+      is_private: false,
     });
     const channelId = createResult.channel?.id;
     if (channelId) {
