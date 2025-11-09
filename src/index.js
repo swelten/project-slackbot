@@ -30,6 +30,21 @@ const NOTION_PROPERTIES = {
   onedrive: 'OneDrive',
 };
 
+const NOTION_SYSTEM_USER_NAMES = new Set(
+  [
+    'Notion Automations',
+    'Zapier',
+    'Gmail™ to Notion',
+    'Slack Connector for Notion',
+    'Notta',
+    'projekt_token',
+    'Emails',
+    'Notion MCP (Beta)',
+    'Notion MCP',
+    'Notis',
+  ].map((name) => name.trim().toLowerCase()),
+);
+
 const QUESTION_FLOW = [
   {
     key: 'projectName',
@@ -519,11 +534,31 @@ function buildPeopleHint(names) {
   if (!names?.length) {
     return '';
   }
-  return names.join(', ');
+
+  const filtered = names
+    .map((name) => name?.trim())
+    .filter(Boolean)
+    .filter((name) => !isSystemNotionUser(name));
+
+  if (!filtered.length) {
+    return '';
+  }
+
+  const unique = [];
+  for (const name of filtered) {
+    if (!unique.includes(name)) {
+      unique.push(name);
+    }
+  }
+  return unique.join(', ');
 }
 
 function needsPeopleHint(questionKey) {
   return questionKey === 'contentLead' || questionKey === 'coordination';
+}
+
+function isSystemNotionUser(name) {
+  return NOTION_SYSTEM_USER_NAMES.has(name?.trim().toLowerCase());
 }
 
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
@@ -561,11 +596,21 @@ async function ensureOnedriveFolder(folderName) {
       parentPath: graphConfig.parentPath,
       token,
     });
-    if (folder?.webUrl) {
-      console.log('OneDrive folder created via Graph API:', folder.webUrl);
-      return folder.webUrl;
+    const shareUrl = await ensureGraphShareLink({
+      driveId: graphConfig.driveId,
+      itemId: folder?.id,
+      token,
+    }).catch((shareError) => {
+      console.warn('Failed to create OneDrive share link, falling back to webUrl.', shareError);
+      return null;
+    });
+
+    const resolvedUrl = shareUrl || folder?.webUrl;
+    if (resolvedUrl) {
+      console.log('OneDrive folder created via Graph API:', resolvedUrl);
+      return resolvedUrl;
     }
-    throw new Error('Graph response missing webUrl');
+    throw new Error('Graph response missing both share link and webUrl');
   } catch (error) {
     console.error('Failed to create OneDrive folder via Graph API, falling back to placeholder.', error);
     return buildPlaceholderUrl(baseUrl, folderName);
@@ -658,7 +703,36 @@ function encodeDrivePath(path) {
 function buildExistingFolderUrl(driveId, parentPath, folderName) {
   const combined = parentPath ? `${parentPath.replace(/\/$/, '')}/${folderName}` : folderName;
   const encoded = encodeDrivePath(combined);
-  return `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encoded}`;
+  return `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${encoded}:/`;
+}
+
+async function ensureGraphShareLink({ driveId, itemId, token }) {
+  if (!driveId || !itemId) {
+    throw new Error('Missing driveId or itemId for share link creation');
+  }
+
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/createLink`;
+  const body = {
+    type: 'view',
+    scope: 'organization',
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph share-link request failed (${response.status}): ${details}`);
+  }
+
+  const payload = await response.json();
+  return payload?.link?.webUrl ?? null;
 }
 
 async function sendQuestion(session, client) {
@@ -754,12 +828,13 @@ async function finalizeSession(session, client, logger) {
     }).join('\n');
     const followUp = notionResult?.url ?? 'Ich konnte keine Notion-Seite verlinken. Bitte prüfe die Logs für Details.';
 
-    const messageLines = [
-      'Danke! Ich habe alle Angaben gesammelt:',
-      summary,
-      '',
-      followUp,
-    ];
+    const messageLines = ['Danke! Ich habe alle Angaben gesammelt:', summary, ''];
+
+    if (notionResult?.onedriveUrl) {
+      messageLines.push(`OneDrive-Ordner: ${notionResult.onedriveUrl}`, '');
+    }
+
+    messageLines.push(followUp);
 
     let projectChannelInfo;
     try {
