@@ -1608,7 +1608,7 @@ async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }
   try {
     const createResult = await client.conversations.create({
       name: channelName,
-      is_private: false,
+      is_private: true,
     });
     const channelId = createResult.channel?.id;
     if (channelId) {
