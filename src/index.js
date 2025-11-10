@@ -35,14 +35,6 @@ const ACQUISITION_STATUS_OPTIONS = [
 
 const RESEARCH_STATUS_OPTIONS = ['Idee', 'To-Do', 'In Bearbeitung', 'Eingereicht', 'Abgelehnt', 'Archiv'];
 
-const RESEARCH_LEAD_PARTNER_OPTIONS = [
-  'FloodWaive',
-  'AfWASA (African Water and Sanitation Association)',
-  'KNUST Ghana',
-  'University of Ghana',
-  'VIELCA Ingenieros S.A.',
-];
-
 const NOTION_PROPERTIES = {
   title: 'Name',
   budget: 'Budget',
@@ -304,9 +296,7 @@ const FLOW_CONFIGS = {
           {
             key: 'leadPartner',
             label: 'Lead-Partner',
-            prompt: 'Wer ist Lead-Partner?',
-            type: 'button-select',
-            options: RESEARCH_LEAD_PARTNER_OPTIONS,
+            prompt: 'Wer ist Lead-Partner? (Bitte Namen eingeben)',
             normalize: (input) => ({ ok: true, value: input.trim() }),
           },
           {
