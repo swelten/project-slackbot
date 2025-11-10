@@ -11,6 +11,10 @@ features:
       url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
       description: Init stub
       should_escape: false
+    - command: /newacquisition
+      url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
+      description: Init stub (Akquise)
+      should_escape: false
 oauth_config:
   scopes:
     bot:

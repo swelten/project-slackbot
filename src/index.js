@@ -191,6 +191,7 @@ const FLOW_CONFIGS = {
           { label: 'Kundenakquise', value: 'customer' },
           { label: 'Forschungsprojekt-Akquise', value: 'research' },
         ],
+        allowSkip: false,
         variantSelector: true,
         normalize: (input) => ({ ok: true, value: input.trim() }),
       },
@@ -400,6 +401,9 @@ const NOTION_SYSTEM_USER_NAMES = new Set(
     'Notis',
   ].map((name) => name.trim().toLowerCase()),
 );
+
+const SKIP_KEYWORD = 'skip';
+const SKIP_HINT_TEXT = 'Schreibe `skip`, um die Frage zu überspringen.';
 
 const sessionStore = new Map();
 
@@ -820,6 +824,15 @@ async function createNotionProject(answers, flow) {
       resolvePersonProperty(answers.coordination, 'Koordination', unresolvedPeople),
     ]);
 
+    const timeframeDate =
+      answers.startDate || answers.endDate
+        ? {
+            start: answers.startDate || null,
+            end: answers.endDate || null,
+          }
+        : null;
+    const projectTypeSelect = answers.projectType ? { name: answers.projectType } : null;
+
     properties = {
       [projectProps.title]: {
         title: [
@@ -832,13 +845,10 @@ async function createNotionProject(answers, flow) {
         number: answers.budget ?? null,
       },
       [projectProps.timeframe]: {
-        date: {
-          start: answers.startDate,
-          end: answers.endDate,
-        },
+        date: timeframeDate,
       },
       [projectProps.projectType]: {
-        select: { name: answers.projectType },
+        select: projectTypeSelect,
       },
       [projectProps.contentLead]: {
         people: contentLeadPeople,
@@ -1166,6 +1176,14 @@ function isSystemNotionUser(name) {
   return NOTION_SYSTEM_USER_NAMES.has(name?.trim().toLowerCase());
 }
 
+function canSkipQuestion(question) {
+  return Boolean(question) && question.allowSkip !== false;
+}
+
+function isSkipAnswer(input) {
+  return typeof input === 'string' && input.trim().toLowerCase() === SKIP_KEYWORD;
+}
+
 function buildActionId(questionKey, index) {
   return `${questionKey}_option_${index}`;
 }
@@ -1379,6 +1397,9 @@ async function sendQuestion(session, client) {
   if (needsPeopleHint(question.key) && session.peopleHint) {
     text = `${text}\nVerfügbare Personen: ${session.peopleHint}`;
   }
+  if (canSkipQuestion(question)) {
+    text = `${text}\n${SKIP_HINT_TEXT}`;
+  }
 
   if (question.type === 'button-select' && Array.isArray(question.options)) {
     await client.chat.postMessage({
@@ -1419,6 +1440,25 @@ async function processAnswer(session, rawAnswer, client, logger) {
   const questions = session.flow?.questions ?? [];
   const question = questions[session.stepIndex];
   if (!question) {
+    return;
+  }
+
+  if (isSkipAnswer(rawAnswer)) {
+    if (!canSkipQuestion(question)) {
+      await client.chat.postMessage({
+        channel: session.channel,
+        thread_ts: session.threadTs,
+        text: 'Diese Frage kann ich nicht überspringen – bitte wähle eine der Optionen oder gib einen Wert ein.',
+      });
+      return;
+    }
+    session.answers[question.key] = null;
+    session.stepIndex += 1;
+    if (session.stepIndex < questions.length) {
+      await sendQuestion(session, client);
+    } else {
+      await finalizeSession(session, client, logger);
+    }
     return;
   }
 
@@ -1540,6 +1580,12 @@ async function finalizeSession(session, client, logger) {
         ? `Ich habe den Channel ${mention} erstellt und dich hinzugefügt.`
         : `Channel ${mention} existiert bereits; ich habe dich hinzugefügt (falls nötig).`;
       messageLines.push('', infoText);
+      if (flowChannelInfo.created && flowChannelInfo.private === false) {
+        messageLines.push(
+          '',
+          'Hinweis: Private Channels konnten nicht erstellt werden (fehlende Slack-Scopes). Der Channel ist daher öffentlich.',
+        );
+      }
     }
 
     if (notionResult?.unresolvedPeople?.length) {
@@ -1605,16 +1651,18 @@ async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }
   const safePrefix = channelPrefix || 'prj';
   const channelName = `${safePrefix}_${slug}`;
   const membersToInvite = buildProjectChannelMembers(userId);
+  const preferredPrivate = true;
   try {
-    const createResult = await client.conversations.create({
-      name: channelName,
-      is_private: true,
+    const { channelId, createdPrivate } = await createSlackChannel({
+      client,
+      channelName,
+      preferredPrivate,
+      logger,
     });
-    const channelId = createResult.channel?.id;
     if (channelId) {
       await inviteUsersToChannel(client, channelId, membersToInvite, logger);
     }
-    return { id: channelId, name: channelName, created: true };
+    return { id: channelId, name: channelName, created: true, private: createdPrivate };
   } catch (error) {
     if (error.data?.error === 'name_taken') {
       const existing = await findChannelByName(client, channelName);
@@ -1625,6 +1673,36 @@ async function ensureFlowChannel({ client, slug, userId, logger, channelPrefix }
     }
     throw error;
   }
+}
+
+async function createSlackChannel({ client, channelName, preferredPrivate, logger }) {
+  const attempts = preferredPrivate ? [true, false] : [false];
+  let lastError;
+  for (const isPrivate of attempts) {
+    try {
+      const response = await client.conversations.create({
+        name: channelName,
+        is_private: isPrivate,
+      });
+      return { channelId: response.channel?.id, createdPrivate: isPrivate };
+    } catch (error) {
+      lastError = error;
+      const slackError = error.data?.error;
+      const canRetryPublic =
+        isPrivate &&
+        preferredPrivate &&
+        ['missing_scope', 'restricted_action', 'not_allowed_token_type'].includes(slackError);
+      if (canRetryPublic) {
+        logger?.warn?.('Creating private channel failed, retrying as public', {
+          channelName,
+          error: slackError,
+        });
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
 }
 
 async function findChannelByName(client, name) {
