@@ -2345,25 +2345,38 @@ async function resolveProjectChannelContext(channelId, client, logger) {
     }
 
     const combinedMeta = [channel.purpose?.value, channel.topic?.value].filter(Boolean).join('\n');
-    const notionUrl = extractLabeledUrl(combinedMeta, 'Notion');
-    const pageId = extractNotionPageIdFromUrl(notionUrl);
-    if (!pageId) {
-      return null;
+    const notionUrlFromMeta = extractLabeledUrl(combinedMeta, 'Notion');
+    const pageIdFromMeta = extractNotionPageIdFromUrl(notionUrlFromMeta);
+
+    if (pageIdFromMeta) {
+      const page = await notion.pages.retrieve({ page_id: pageIdFromMeta });
+      const onedrivePropertyName = NOTION_PROPERTIES.onedrive;
+      const onedriveUrl = extractOnedriveUrlFromPage(page, onedrivePropertyName);
+      if (!onedriveUrl) {
+        return null;
+      }
+      const context = {
+        channelName: channel.name,
+        notionUrl: notionUrlFromMeta || page.url,
+        notionPageId: page.id,
+        onedriveUrl,
+      };
+      cacheChannelContext(channelId, context);
+      return context;
     }
-    const page = await notion.pages.retrieve({ page_id: pageId });
-    const onedrivePropertyName = NOTION_PROPERTIES.onedrive;
-    const onedriveUrl = extractOnedriveUrlFromPage(page, onedrivePropertyName);
-    if (!onedriveUrl) {
-      return null;
+
+    const fallbackContext = await findNotionContextForChannel(channel.name, logger);
+    if (fallbackContext) {
+      cacheChannelContext(channelId, fallbackContext);
+      logger?.info?.('Resolved channel context via Notion fallback', {
+        channelId,
+        channelName: channel.name,
+      });
+      return fallbackContext;
     }
-    const context = {
-      channelName: channel.name,
-      notionUrl,
-      notionPageId: page.id,
-      onedriveUrl,
-    };
-    cacheChannelContext(channelId, context);
-    return context;
+
+    logger?.info?.('Failed to derive channel context from Notion fallback', { channelName: channel.name });
+    return null;
   } catch (error) {
     if (error.data?.error === 'missing_scope') {
       logger?.warn?.(
@@ -2414,6 +2427,83 @@ function extractNotionPageIdFromUrl(url) {
     return '';
   }
   return formatNotionUuid(match[0]);
+}
+
+async function findNotionContextForChannel(channelName, logger) {
+  if (!channelName || !channelName.startsWith(PROJECT_CHANNEL_PREFIX)) {
+    return null;
+  }
+  if (!notion || !defaultNotionDatabaseId) {
+    return null;
+  }
+
+  const channelSlug = extractChannelSlug(channelName);
+  if (!channelSlug) {
+    return null;
+  }
+
+  let cursor;
+  do {
+    const response = await notion.databases.query({
+      database_id: defaultNotionDatabaseId,
+      start_cursor: cursor,
+      page_size: 50,
+      sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
+    });
+
+    for (const page of response.results) {
+      const pageSlug = deriveChannelSlugFromPage(page);
+      if (!pageSlug || pageSlug !== channelSlug) {
+        continue;
+      }
+      const onedriveUrl = extractOnedriveUrlFromPage(page, NOTION_PROPERTIES.onedrive);
+      if (!onedriveUrl) {
+        continue;
+      }
+      logger?.debug?.('Matched channel to Notion page via fallback lookup', {
+        channelName,
+        notionPageId: page.id,
+      });
+      return {
+        channelName,
+        notionUrl: page.url,
+        notionPageId: page.id,
+        onedriveUrl,
+      };
+    }
+
+    cursor = response.has_more ? response.next_cursor : undefined;
+  } while (cursor);
+
+  return null;
+}
+
+function extractChannelSlug(channelName) {
+  if (!channelName) {
+    return '';
+  }
+  const normalized = channelName.trim().toLowerCase();
+  const prefix = `${PROJECT_CHANNEL_PREFIX}_`;
+  if (!normalized.startsWith(prefix)) {
+    return '';
+  }
+  return buildChannelSlug(normalized.slice(prefix.length));
+}
+
+function deriveChannelSlugFromPage(page) {
+  if (!page?.properties) {
+    return '';
+  }
+  const titleProperty = page.properties[NOTION_PROPERTIES.title];
+  if (!titleProperty || titleProperty.type !== 'title') {
+    return '';
+  }
+  const titleText = titleProperty.title.map((item) => item.plain_text || '').join('').trim();
+  if (!titleText) {
+    return '';
+  }
+  const baseName = sanitizeTitle(stripExistingPrefix(titleText));
+  return buildChannelSlug(baseName);
 }
 
 function formatNotionUuid(raw) {

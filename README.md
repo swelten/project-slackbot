@@ -136,6 +136,7 @@ settings:
       - message.channels
       - message.groups
       - message.im
+      - file_shared
   interactivity:
     is_enabled: true
     request_url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
