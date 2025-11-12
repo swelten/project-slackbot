@@ -2267,6 +2267,12 @@ async function resolveProjectChannelContext(channelId, client, logger) {
       onedriveUrl,
     };
   } catch (error) {
+    if (error.data?.error === 'missing_scope') {
+      logger?.warn?.(
+        'Missing scope for conversations.info – ensure channels:read and groups:read are granted to the bot.',
+      );
+      return null;
+    }
     logger?.error?.('Failed to resolve project channel context', error);
     return null;
   }
