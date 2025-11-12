@@ -1615,12 +1615,12 @@ async function handleFileShareEvent({ event, client, logger }) {
     });
 
     if (!isGraphUploadConfigured()) {
-      logger?.debug?.('Skipping OneDrive upload prompt – Graph config incomplete.');
+      logger?.info?.('Skipping OneDrive upload prompt – Graph config incomplete.');
       return;
     }
 
     if (!notion) {
-      logger?.debug?.('Skipping OneDrive upload prompt – Notion client unavailable.');
+      logger?.info?.('Skipping OneDrive upload prompt – Notion client unavailable.');
       return;
     }
 
@@ -1637,11 +1637,18 @@ async function handleFileShareEvent({ event, client, logger }) {
       !channelContext.onedriveUrl ||
       channelContext.onedriveUrl.includes('onedrive-placeholder.local')
     ) {
-      logger?.debug?.('No valid channel context found for OneDrive upload automation', {
+      logger?.info?.('No valid channel context – skipping OneDrive upload prompt', {
         channel: event.channel,
+        hasContext: Boolean(channelContext),
       });
       return;
     }
+
+    logger?.info?.('Preparing OneDrive upload prompt', {
+      channel: event.channel,
+      user: event.user,
+      files: event.files.map((file) => ({ id: file.id, name: file.name, mimetype: file.mimetype })),
+    });
 
     for (const file of event.files) {
       if (!file?.id) {
@@ -1650,6 +1657,7 @@ async function handleFileShareEvent({ event, client, logger }) {
 
       const cacheKey = `${file.id}:${event.channel}`;
       if (processedFileUploads.has(cacheKey)) {
+        logger?.debug?.('File already processed, skipping prompt', { fileId: file.id, channel: event.channel });
         continue;
       }
       processedFileUploads.add(cacheKey);
@@ -1692,13 +1700,18 @@ async function handleFileShareEvent({ event, client, logger }) {
         },
       ];
 
-      await client.chat.postEphemeral({
-        channel: event.channel,
-        user: event.user,
-        text,
-        thread_ts: event.thread_ts ?? event.ts,
-        blocks,
-      });
+      try {
+        await client.chat.postEphemeral({
+          channel: event.channel,
+          user: event.user,
+          text,
+          thread_ts: event.thread_ts ?? event.ts,
+          blocks,
+        });
+        logger?.info?.('Posted OneDrive upload prompt', { fileId: file.id, channel: event.channel });
+      } catch (error) {
+        logger?.error?.('Failed to post OneDrive upload prompt', safeError(error));
+      }
     }
   } catch (error) {
     logger.error('Failed to handle file share event', error);
