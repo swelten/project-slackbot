@@ -593,7 +593,8 @@ function resolveDatabaseId(config) {
   return fromEnv || fallback || defaultNotionDatabaseId || '';
 }
 
-app.event('message', async ({ event, client, logger }) => {
+app.event('message', async ({ event, client, logger, ack }) => {
+  await ack();
   if (event.bot_id) {
     return;
   }
@@ -651,7 +652,8 @@ app.event('message', async ({ event, client, logger }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
-app.event('file_shared', async ({ event, client, logger, body }) => {
+app.event('file_shared', async ({ event, client, logger, body, ack }) => {
+  await ack();
   const normalized = await normalizeFileSharedEvent(event, client, logger);
   if (!normalized) {
     return;
