@@ -594,11 +594,6 @@ app.event('message', async ({ event, client, logger }) => {
     return;
   }
 
-  if (event.subtype === 'file_share') {
-    await handleFileShareEvent({ event, client, logger });
-    return;
-  }
-
   if (event.subtype) {
     return;
   }
@@ -1665,16 +1660,17 @@ async function handleFileShareEvent({ event, client, logger }) {
         processedFileUploads.clear();
       }
 
+      const fileLabel = file.name || file.title || file.id || 'Datei';
       const value = encodeActionValue({
         channelId: event.channel,
         fileId: file.id,
         messageTs: event.ts,
         onedriveUrl: channelContext.onedriveUrl,
         notionPageId: channelContext.notionPageId,
-        fileName: file.name || 'Datei',
+        fileName: fileLabel,
       });
 
-      const text = `Ich habe die Datei *${file.name || 'ohne Namen'}* gesehen. Soll ich sie im OneDrive-Ordner dieses Projekts speichern?`;
+      const text = `Ich habe die Datei *${fileLabel}* gesehen. Soll ich sie im OneDrive-Ordner dieses Projekts speichern?`;
       const blocks = [
         {
           type: 'section',
@@ -2150,14 +2146,15 @@ async function handleOnedriveUploadApproval({ payload, client, logger, userId })
   const downloadBuffer = await downloadSlackFile(slackFile);
   const uploadResult = await uploadBufferToOnedrive({
     buffer: downloadBuffer,
-    fileName: slackFile.name || fileName || 'Upload',
+    fileName: slackFile.name || slackFile.title || fileName || 'Upload',
     folderUrl: onedriveUrl,
     logger,
   });
 
+  const resolvedName = slackFile.name || slackFile.title || fileName || 'die Datei';
   const confirmation = uploadResult?.webUrl
-    ? `Ich habe *${slackFile.name || fileName || 'die Datei'}* nach OneDrive hochgeladen:\n${uploadResult.webUrl}`
-    : `Ich habe *${slackFile.name || fileName || 'die Datei'}* nach OneDrive hochgeladen.`;
+    ? `Ich habe *${resolvedName}* nach OneDrive hochgeladen:\n${uploadResult.webUrl}`
+    : `Ich habe *${resolvedName}* nach OneDrive hochgeladen.`;
 
   await postEphemeralSafe(client, channelId, userId, {
     text: confirmation,
@@ -2169,7 +2166,7 @@ async function handleOnedriveUploadApproval({ payload, client, logger, userId })
       await client.chat.postMessage({
         channel: channelId,
         thread_ts: messageTs,
-        text: `Upload abgeschlossen: ${slackFile.name || fileName || 'Datei'} ist jetzt im OneDrive-Ordner.`,
+        text: `Upload abgeschlossen: ${resolvedName} ist jetzt im OneDrive-Ordner.`,
       });
     } catch (error) {
       logger?.warn?.('Failed to post OneDrive upload confirmation in thread', error);
