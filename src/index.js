@@ -374,6 +374,8 @@ const ONEDRIVE_UPLOAD_DECLINE_ACTION = 'decline_onedrive_upload';
 const SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024; // 4 MB
 const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const processedFileUploads = new Set();
+const CHANNEL_CONTEXT_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+const channelContextCache = new Map();
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
@@ -912,6 +914,7 @@ async function createNotionProject(answers, flow) {
   });
 
   return {
+    pageId: response.id,
     url: response.url,
     unresolvedPeople,
     title: prefixedTitle,
@@ -1560,16 +1563,38 @@ async function handleFileShareEvent({ event, client, logger }) {
       return;
     }
 
-    if (!isGraphUploadConfigured() || !notion) {
+    logger?.debug?.('file_share event detected', {
+      channel: event.channel,
+      user: event.user,
+      fileCount: event.files.length,
+    });
+
+    if (!isGraphUploadConfigured()) {
+      logger?.debug?.('Skipping OneDrive upload prompt – Graph config incomplete.');
       return;
     }
 
-    const channelContext = await resolveProjectChannelContext(event.channel, client, logger);
+    if (!notion) {
+      logger?.debug?.('Skipping OneDrive upload prompt – Notion client unavailable.');
+      return;
+    }
+
+    let channelContext = getCachedChannelContext(event.channel);
+    if (!channelContext) {
+      channelContext = await resolveProjectChannelContext(event.channel, client, logger);
+      if (channelContext) {
+        cacheChannelContext(event.channel, channelContext);
+      }
+    }
+
     if (
       !channelContext ||
       !channelContext.onedriveUrl ||
       channelContext.onedriveUrl.includes('onedrive-placeholder.local')
     ) {
+      logger?.debug?.('No valid channel context found for OneDrive upload automation', {
+        channel: event.channel,
+      });
       return;
     }
 
@@ -1732,6 +1757,15 @@ async function finalizeSession(session, client, logger) {
         notionUrl: notionResult?.url,
         onedriveUrl: notionResult?.onedriveUrl,
         logger,
+      });
+    }
+
+    if (flowChannelInfo?.id) {
+      cacheChannelContext(flowChannelInfo.id, {
+        channelName: flowChannelInfo.name,
+        notionUrl: notionResult?.url,
+        notionPageId: notionResult?.pageId || extractNotionPageIdFromUrl(notionResult?.url),
+        onedriveUrl: notionResult?.onedriveUrl,
       });
     }
 
@@ -2241,6 +2275,10 @@ function isGraphUploadConfigured() {
 }
 
 async function resolveProjectChannelContext(channelId, client, logger) {
+  const cached = getCachedChannelContext(channelId);
+  if (cached) {
+    return cached;
+  }
   try {
     const info = await client.conversations.info({ channel: channelId });
     const channel = info.channel;
@@ -2260,12 +2298,14 @@ async function resolveProjectChannelContext(channelId, client, logger) {
     if (!onedriveUrl) {
       return null;
     }
-    return {
+    const context = {
       channelName: channel.name,
       notionUrl,
       notionPageId: page.id,
       onedriveUrl,
     };
+    cacheChannelContext(channelId, context);
+    return context;
   } catch (error) {
     if (error.data?.error === 'missing_scope') {
       logger?.warn?.(
@@ -2362,6 +2402,28 @@ async function postEphemeralSafe(client, channel, user, message) {
   } catch (error) {
     console.warn('Failed to post ephemeral message', safeError(error));
   }
+}
+
+function cacheChannelContext(channelId, context) {
+  if (!channelId || !context) {
+    return;
+  }
+  channelContextCache.set(channelId, { ...context, cachedAt: Date.now() });
+}
+
+function getCachedChannelContext(channelId) {
+  if (!channelId) {
+    return null;
+  }
+  const entry = channelContextCache.get(channelId);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.cachedAt > CHANNEL_CONTEXT_CACHE_TTL_MS) {
+    channelContextCache.delete(channelId);
+    return null;
+  }
+  return entry;
 }
 
 export const handler = async (event, context, callback) => {
