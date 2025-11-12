@@ -376,6 +376,10 @@ const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const processedFileUploads = new Set();
 const CHANNEL_CONTEXT_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
 const channelContextCache = new Map();
+const FILE_PROMPT_TTL_MS = 1000 * 60 * 5; // 5 minutes
+const recentFilePromptCache = new Map();
+const EVENT_TTL_MS = 1000 * 60 * 5;
+const recentEventCache = new Map();
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
@@ -647,12 +651,17 @@ app.event('message', async ({ event, client, logger }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
-app.event('file_shared', async ({ event, client, logger }) => {
+app.event('file_shared', async ({ event, client, logger, body }) => {
   const normalized = await normalizeFileSharedEvent(event, client, logger);
   if (!normalized) {
     return;
   }
-  await handleFileShareEvent({ event: normalized, client, logger });
+  await handleFileShareEvent({
+    event: normalized,
+    client,
+    logger,
+    eventId: body?.event_id,
+  });
 });
 
 app.action(/.+_option_\d+$/, async ({ ack, body, action, client, logger }) => {
@@ -1588,19 +1597,49 @@ async function normalizeFileSharedEvent(event, client, logger) {
     return null;
   }
 
+  const enrichedFiles = await Promise.all(
+    files.map((file) => ensureFileMetadata(file, client, logger)),
+  );
+
   return {
     channel,
     user,
-    files,
+    files: enrichedFiles,
     thread_ts: event.message_ts || event.thread_ts,
     ts: event.event_ts || event.ts,
   };
 }
 
-async function handleFileShareEvent({ event, client, logger }) {
+async function ensureFileMetadata(file, client, logger) {
+  if (!file?.id) {
+    return file;
+  }
+  if (file.name && file.title) {
+    return file;
+  }
+  try {
+    const response = await client.files.info({ file: file.id });
+    if (response.file) {
+      return response.file;
+    }
+  } catch (error) {
+    logger?.warn?.('Failed to enrich Slack file metadata', safeError(error));
+  }
+  return file;
+}
+
+async function handleFileShareEvent({ event, client, logger, eventId }) {
   try {
     if (!event.channel || !event.user || !Array.isArray(event.files) || !event.files.length) {
       return;
+    }
+
+    if (eventId && isRecentEvent(eventId)) {
+      logger?.debug?.('Skipping duplicate file_shared event', { eventId });
+      return;
+    }
+    if (eventId) {
+      rememberEvent(eventId);
     }
 
     logger?.debug?.('file_share event detected', {
@@ -1660,7 +1699,14 @@ async function handleFileShareEvent({ event, client, logger }) {
         processedFileUploads.clear();
       }
 
-      const fileLabel = file.name || file.title || file.id || 'Datei';
+      const fileLabel = file.name || file.title || file.original_name || file.id || 'Datei';
+      const promptKey = `${event.channel}:${file.id}:${event.ts || ''}`;
+      if (isRecentPrompt(promptKey)) {
+        logger?.debug?.('Duplicate prompt detected, skipping', { promptKey });
+        continue;
+      }
+      rememberPrompt(promptKey);
+
       const value = encodeActionValue({
         channelId: event.channel,
         fileId: file.id,
@@ -2569,6 +2615,56 @@ function getCachedChannelContext(channelId) {
     return null;
   }
   return entry;
+}
+
+function isRecentPrompt(key) {
+  if (!key) {
+    return false;
+  }
+  const entry = recentFilePromptCache.get(key);
+  if (entry && entry.expiresAt > Date.now()) {
+    return true;
+  }
+  return false;
+}
+
+function rememberPrompt(key) {
+  if (!key) {
+    return;
+  }
+  pruneCache(recentFilePromptCache);
+  recentFilePromptCache.set(key, { expiresAt: Date.now() + FILE_PROMPT_TTL_MS });
+}
+
+function isRecentEvent(eventId) {
+  if (!eventId) {
+    return false;
+  }
+  const entry = recentEventCache.get(eventId);
+  if (entry && entry.expiresAt > Date.now()) {
+    return true;
+  }
+  return false;
+}
+
+function rememberEvent(eventId) {
+  if (!eventId) {
+    return;
+  }
+  pruneCache(recentEventCache);
+  recentEventCache.set(eventId, { expiresAt: Date.now() + EVENT_TTL_MS });
+}
+
+function pruneCache(map) {
+  if (map.size < 1000) {
+    return;
+  }
+  const now = Date.now();
+  for (const [key, entry] of map.entries()) {
+    if (!entry?.expiresAt || entry.expiresAt <= now) {
+      map.delete(key);
+    }
+  }
 }
 
 export const handler = async (event, context, callback) => {
