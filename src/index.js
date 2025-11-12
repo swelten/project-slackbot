@@ -652,6 +652,14 @@ app.event('message', async ({ event, client, logger }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
+app.event('file_shared', async ({ event, client, logger }) => {
+  const normalized = await normalizeFileSharedEvent(event, client, logger);
+  if (!normalized) {
+    return;
+  }
+  await handleFileShareEvent({ event: normalized, client, logger });
+});
+
 app.action(/.+_option_\d+$/, async ({ ack, body, action, client, logger }) => {
   await ack();
   const userId = body.user?.id;
@@ -1555,6 +1563,43 @@ async function processAnswer(session, rawAnswer, client, logger) {
   }
 
   await finalizeSession(session, client, logger);
+}
+
+async function normalizeFileSharedEvent(event, client, logger) {
+  const channel = event.channel_id || event.channel || event.item?.channel;
+  const user = event.user_id || event.user;
+  if (!channel || !user) {
+    return null;
+  }
+
+  let files = [];
+  if (event.file) {
+    files = [event.file];
+  } else if (Array.isArray(event.files) && event.files.length) {
+    files = event.files;
+  } else if (event.file_id) {
+    try {
+      const info = await client.files.info({ file: event.file_id });
+      if (info.file) {
+        files = [info.file];
+      }
+    } catch (error) {
+      logger?.error?.('Failed to fetch file info for file_shared event', error);
+      return null;
+    }
+  }
+
+  if (!files.length) {
+    return null;
+  }
+
+  return {
+    channel,
+    user,
+    files,
+    thread_ts: event.message_ts || event.thread_ts,
+    ts: event.event_ts || event.ts,
+  };
 }
 
 async function handleFileShareEvent({ event, client, logger }) {
