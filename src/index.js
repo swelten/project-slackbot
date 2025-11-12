@@ -368,6 +368,13 @@ const FLOW_CONFIGS = {
   },
 };
 
+const PROJECT_CHANNEL_PREFIX = FLOW_CONFIGS.project?.channelPrefix || 'prj';
+const ONEDRIVE_UPLOAD_APPROVE_ACTION = 'approve_onedrive_upload';
+const ONEDRIVE_UPLOAD_DECLINE_ACTION = 'decline_onedrive_upload';
+const SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024; // 4 MB
+const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+const processedFileUploads = new Set();
+
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
   (process.env.SLACK_PROJECT_CHANNEL_MEMBERS && process.env.SLACK_PROJECT_CHANNEL_MEMBERS.trim()) ||
@@ -581,7 +588,16 @@ function resolveDatabaseId(config) {
 }
 
 app.event('message', async ({ event, client, logger }) => {
-  if (event.subtype || event.bot_id) {
+  if (event.bot_id) {
+    return;
+  }
+
+  if (event.subtype === 'file_share') {
+    await handleFileShareEvent({ event, client, logger });
+    return;
+  }
+
+  if (event.subtype) {
     return;
   }
 
@@ -661,6 +677,40 @@ app.action(/.+_option_\d+$/, async ({ ack, body, action, client, logger }) => {
   }
 
   await processAnswer(session, value, client, logger);
+});
+
+app.action(ONEDRIVE_UPLOAD_APPROVE_ACTION, async ({ ack, body, action, client, logger }) => {
+  await ack();
+  const payload = decodeActionValue(action?.value);
+  if (!payload) {
+    return;
+  }
+
+  try {
+    await handleOnedriveUploadApproval({
+      payload,
+      client,
+      logger,
+      userId: body.user?.id,
+    });
+  } catch (error) {
+    logger.error('Failed to upload Slack file to OneDrive', error);
+    await postEphemeralSafe(client, payload.channelId, body.user?.id, {
+      text: 'Beim Hochladen zur OneDrive-Projektmappe ist ein Fehler aufgetreten. Bitte versuche es später erneut.',
+    });
+  }
+});
+
+app.action(ONEDRIVE_UPLOAD_DECLINE_ACTION, async ({ ack, body, action, client }) => {
+  await ack();
+  const payload = decodeActionValue(action?.value);
+  if (!payload) {
+    return;
+  }
+  await postEphemeralSafe(client, payload.channelId, body.user?.id, {
+    text: 'Alles klar, ich lade die Datei nicht nach OneDrive hoch.',
+    thread_ts: payload.messageTs,
+  });
 });
 
 app.error((error) => {
@@ -1504,6 +1554,87 @@ async function processAnswer(session, rawAnswer, client, logger) {
   await finalizeSession(session, client, logger);
 }
 
+async function handleFileShareEvent({ event, client, logger }) {
+  try {
+    if (!event.channel || !event.user || !Array.isArray(event.files) || !event.files.length) {
+      return;
+    }
+
+    if (!isGraphUploadConfigured() || !notion) {
+      return;
+    }
+
+    const channelContext = await resolveProjectChannelContext(event.channel, client, logger);
+    if (
+      !channelContext ||
+      !channelContext.onedriveUrl ||
+      channelContext.onedriveUrl.includes('onedrive-placeholder.local')
+    ) {
+      return;
+    }
+
+    for (const file of event.files) {
+      if (!file?.id) {
+        continue;
+      }
+
+      const cacheKey = `${file.id}:${event.channel}`;
+      if (processedFileUploads.has(cacheKey)) {
+        continue;
+      }
+      processedFileUploads.add(cacheKey);
+      if (processedFileUploads.size > 5000) {
+        processedFileUploads.clear();
+      }
+
+      const value = encodeActionValue({
+        channelId: event.channel,
+        fileId: file.id,
+        messageTs: event.ts,
+        onedriveUrl: channelContext.onedriveUrl,
+        notionPageId: channelContext.notionPageId,
+        fileName: file.name || 'Datei',
+      });
+
+      const text = `Ich habe die Datei *${file.name || 'ohne Namen'}* gesehen. Soll ich sie im OneDrive-Ordner dieses Projekts speichern?`;
+      const blocks = [
+        {
+          type: 'section',
+          text: { type: 'mrkdwn', text: `${text}\nOrdner: ${channelContext.onedriveUrl}` },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Ja, bitte hochladen', emoji: true },
+              style: 'primary',
+              action_id: ONEDRIVE_UPLOAD_APPROVE_ACTION,
+              value,
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Nein', emoji: true },
+              action_id: ONEDRIVE_UPLOAD_DECLINE_ACTION,
+              value,
+            },
+          ],
+        },
+      ];
+
+      await client.chat.postEphemeral({
+        channel: event.channel,
+        user: event.user,
+        text,
+        thread_ts: event.thread_ts ?? event.ts,
+        blocks,
+      });
+    }
+  } catch (error) {
+    logger.error('Failed to handle file share event', error);
+  }
+}
+
 async function finalizeSession(session, client, logger) {
   try {
     const flow = session.flow;
@@ -1899,6 +2030,332 @@ function safeError(error) {
     };
   }
   return base;
+}
+
+async function handleOnedriveUploadApproval({ payload, client, logger, userId }) {
+  const { channelId, fileId, onedriveUrl, messageTs, fileName } = payload || {};
+  if (!channelId || !fileId || !onedriveUrl) {
+    throw new Error('Incomplete upload payload');
+  }
+
+  if (onedriveUrl.includes('onedrive-placeholder.local')) {
+    await postEphemeralSafe(client, channelId, userId, {
+      text: 'Für dieses Projekt existiert nur ein Platzhalter-Link. Bitte konfiguriere die OneDrive-Integration und versuche es erneut.',
+      thread_ts: messageTs,
+    });
+    return;
+  }
+
+  if (!isGraphUploadConfigured()) {
+    await postEphemeralSafe(client, channelId, userId, {
+      text: 'Die OneDrive-Integration ist nicht vollständig konfiguriert. Bitte hinterlegt die Graph-Variablen.',
+      thread_ts: messageTs,
+    });
+    return;
+  }
+
+  const slackFile = await fetchSlackFileInfo(client, fileId);
+  const downloadBuffer = await downloadSlackFile(slackFile);
+  const uploadResult = await uploadBufferToOnedrive({
+    buffer: downloadBuffer,
+    fileName: slackFile.name || fileName || 'Upload',
+    folderUrl: onedriveUrl,
+    logger,
+  });
+
+  const confirmation = uploadResult?.webUrl
+    ? `Ich habe *${slackFile.name || fileName || 'die Datei'}* nach OneDrive hochgeladen:\n${uploadResult.webUrl}`
+    : `Ich habe *${slackFile.name || fileName || 'die Datei'}* nach OneDrive hochgeladen.`;
+
+  await postEphemeralSafe(client, channelId, userId, {
+    text: confirmation,
+    thread_ts: messageTs,
+  });
+
+  if (messageTs) {
+    try {
+      await client.chat.postMessage({
+        channel: channelId,
+        thread_ts: messageTs,
+        text: `Upload abgeschlossen: ${slackFile.name || fileName || 'Datei'} ist jetzt im OneDrive-Ordner.`,
+      });
+    } catch (error) {
+      logger?.warn?.('Failed to post OneDrive upload confirmation in thread', error);
+    }
+  }
+}
+
+async function fetchSlackFileInfo(client, fileId) {
+  const response = await client.files.info({ file: fileId });
+  if (!response.file?.url_private_download) {
+    throw new Error('Slack file download URL missing');
+  }
+  return response.file;
+}
+
+async function downloadSlackFile(file) {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) {
+    throw new Error('SLACK_BOT_TOKEN is not set');
+  }
+  const response = await fetch(file.url_private_download, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Slack file download failed (${response.status}): ${body}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function uploadBufferToOnedrive({ buffer, fileName, folderUrl, logger }) {
+  if (!buffer?.length || !fileName || !folderUrl) {
+    throw new Error('Missing upload parameters');
+  }
+
+  const graphConfig = buildGraphConfig();
+  const token = await getGraphAccessToken(graphConfig);
+  const folderInfo = await resolveDriveItemFromShareLink(folderUrl, token);
+  const envDriveId = graphConfig.driveId;
+  const driveId = folderInfo?.parentReference?.driveId || envDriveId;
+  const folderId = folderInfo?.id;
+  if (!driveId || !folderId) {
+    throw new Error('Konnte den OneDrive-Ordner nicht aus dem Link bestimmen.');
+  }
+
+  const safeName = sanitizeFilename(fileName);
+  if (buffer.length <= SIMPLE_UPLOAD_LIMIT) {
+    return simpleGraphUpload({ buffer, driveId, folderId, fileName: safeName, token });
+  }
+  return chunkedGraphUpload({ buffer, driveId, folderId, fileName: safeName, token, logger });
+}
+
+async function simpleGraphUpload({ buffer, driveId, folderId, fileName, token }) {
+  const encodedName = encodeURIComponent(fileName);
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${folderId}:/${encodedName}:/content`;
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/octet-stream',
+    },
+    body: buffer,
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph upload failed (${response.status}): ${details}`);
+  }
+  return response.json();
+}
+
+async function chunkedGraphUpload({ buffer, driveId, folderId, fileName, token, logger }) {
+  const encodedName = encodeURIComponent(fileName);
+  const sessionUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${folderId}:/${encodedName}:/createUploadSession`;
+  const sessionResponse = await fetch(sessionUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      item: {
+        '@microsoft.graph.conflictBehavior': 'replace',
+      },
+    }),
+  });
+  if (!sessionResponse.ok) {
+    const details = await sessionResponse.text();
+    throw new Error(`Graph upload session failed (${sessionResponse.status}): ${details}`);
+  }
+  const sessionPayload = await sessionResponse.json();
+  const uploadUrl = sessionPayload?.uploadUrl;
+  if (!uploadUrl) {
+    throw new Error('Upload session missing uploadUrl');
+  }
+
+  let start = 0;
+  while (start < buffer.length) {
+    const end = Math.min(start + UPLOAD_CHUNK_SIZE, buffer.length);
+    const chunk = buffer.slice(start, end);
+    const response = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Length': chunk.length.toString(),
+        'Content-Range': `bytes ${start}-${end - 1}/${buffer.length}`,
+      },
+      body: chunk,
+    });
+    if (![200, 201, 202].includes(response.status)) {
+      const details = await response.text();
+      throw new Error(`Chunk upload failed (${response.status}): ${details}`);
+    }
+    if (response.status === 200 || response.status === 201) {
+      try {
+        return await response.json();
+      } catch (error) {
+        logger?.warn?.('Could not parse final Graph response', error);
+        return null;
+      }
+    }
+    start = end;
+  }
+  return null;
+}
+
+async function resolveDriveItemFromShareLink(shareUrl, token) {
+  if (!shareUrl) {
+    throw new Error('Share link missing');
+  }
+  const encoded = Buffer.from(shareUrl, 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+  const url = `https://graph.microsoft.com/v1.0/shares/u!${encoded}/driveItem`;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph share lookup failed (${response.status}): ${details}`);
+  }
+  return response.json();
+}
+
+function sanitizeFilename(name) {
+  return name.replace(/[<>:"/\\|?*]+/g, '_').replace(/\s+/g, ' ').trim() || 'Upload';
+}
+
+function buildGraphConfig() {
+  return {
+    clientId: process.env.ONEDRIVE_CLIENT_ID?.trim(),
+    clientSecret: process.env.ONEDRIVE_CLIENT_SECRET?.trim(),
+    tenantId: process.env.ONEDRIVE_TENANT_ID?.trim(),
+    driveId: process.env.ONEDRIVE_DRIVE_ID?.trim(),
+  };
+}
+
+function isGraphUploadConfigured() {
+  const cfg = buildGraphConfig();
+  return Boolean(cfg.clientId && cfg.clientSecret && cfg.tenantId && cfg.driveId);
+}
+
+async function resolveProjectChannelContext(channelId, client, logger) {
+  try {
+    const info = await client.conversations.info({ channel: channelId });
+    const channel = info.channel;
+    if (!channel?.name || !channel.name.startsWith(PROJECT_CHANNEL_PREFIX)) {
+      return null;
+    }
+
+    const combinedMeta = [channel.purpose?.value, channel.topic?.value].filter(Boolean).join('\n');
+    const notionUrl = extractLabeledUrl(combinedMeta, 'Notion');
+    const pageId = extractNotionPageIdFromUrl(notionUrl);
+    if (!pageId) {
+      return null;
+    }
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const onedrivePropertyName = NOTION_PROPERTIES.onedrive;
+    const onedriveUrl = extractOnedriveUrlFromPage(page, onedrivePropertyName);
+    if (!onedriveUrl) {
+      return null;
+    }
+    return {
+      channelName: channel.name,
+      notionUrl,
+      notionPageId: page.id,
+      onedriveUrl,
+    };
+  } catch (error) {
+    logger?.error?.('Failed to resolve project channel context', error);
+    return null;
+  }
+}
+
+function extractOnedriveUrlFromPage(page, propertyName) {
+  if (!page?.properties || !propertyName) {
+    return '';
+  }
+  const property = page.properties[propertyName];
+  if (!property) {
+    return '';
+  }
+  if (property.type === 'url') {
+    return property.url || '';
+  }
+  if (property.type === 'rich_text') {
+    return property.rich_text?.map((item) => item?.plain_text || '').join('').trim() || '';
+  }
+  if (typeof property.url === 'string') {
+    return property.url;
+  }
+  return '';
+}
+
+function extractLabeledUrl(text, label) {
+  if (!text || !label) {
+    return '';
+  }
+  const regex = new RegExp(`${label}\\s*:\\s*(https?://\\S+)`, 'i');
+  const match = text.match(regex);
+  return match ? match[1] : '';
+}
+
+function extractNotionPageIdFromUrl(url) {
+  if (!url) {
+    return '';
+  }
+  const match = url.match(/[a-f0-9]{32}/i);
+  if (!match) {
+    return '';
+  }
+  return formatNotionUuid(match[0]);
+}
+
+function formatNotionUuid(raw) {
+  if (!raw) {
+    return '';
+  }
+  const hex = raw.replace(/-/g, '');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function encodeActionValue(payload) {
+  return Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+}
+
+function decodeActionValue(value) {
+  if (!value) {
+    return null;
+  }
+  try {
+    const json = Buffer.from(value, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch (error) {
+    return null;
+  }
+}
+
+async function postEphemeralSafe(client, channel, user, message) {
+  if (!client || !channel || !user) {
+    return;
+  }
+  const payload = {
+    channel,
+    user,
+    text: message.text || ' ',
+  };
+  if (message.thread_ts) {
+    payload.thread_ts = message.thread_ts;
+  }
+  if (message.blocks) {
+    payload.blocks = message.blocks;
+  }
+  try {
+    await client.chat.postEphemeral(payload);
+  } catch (error) {
+    console.warn('Failed to post ephemeral message', safeError(error));
+  }
 }
 
 export const handler = async (event, context, callback) => {

@@ -26,6 +26,7 @@ oauth_config:
       - groups:history
       - channels:manage
       - channels:read
+      - files:read
 settings:
   event_subscriptions:
     request_url: https://gjxnfweznwiinhyxamgjj6csvu0rwmid.lambda-url.eu-central-1.on.aws/slack/events
