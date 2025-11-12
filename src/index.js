@@ -417,6 +417,7 @@ const receiver = new AwsLambdaReceiver({
 const app = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
+  processBeforeResponse: true,
 });
 
 const notion =
@@ -593,8 +594,7 @@ function resolveDatabaseId(config) {
   return fromEnv || fallback || defaultNotionDatabaseId || '';
 }
 
-app.event('message', async ({ event, client, logger, ack }) => {
-  await ack();
+app.event('message', async ({ event, client, logger }) => {
   if (event.bot_id) {
     return;
   }
@@ -652,8 +652,7 @@ app.event('message', async ({ event, client, logger, ack }) => {
   await processAnswer(session, rawAnswer, client, logger);
 });
 
-app.event('file_shared', async ({ event, client, logger, body, ack }) => {
-  await ack();
+app.event('file_shared', async ({ event, client, logger, body }) => {
   const normalized = await normalizeFileSharedEvent(event, client, logger);
   if (!normalized) {
     return;
