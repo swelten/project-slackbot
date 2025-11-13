@@ -6,6 +6,8 @@ RUN npm install --omit=dev
 
 # Copy application source
 COPY src/ ./src/
+COPY projectstructure ./projectstructure
+COPY acquisitionstructure ./acquisitionstructure
 
 # Lambda entrypoint
 CMD ["src/index.handler"]
