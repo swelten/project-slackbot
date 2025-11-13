@@ -170,6 +170,8 @@ Der Bot legt bei jedem neuen Projekt automatisch einen Ordner über Microsoft Gr
 - `ONEDRIVE_ACQ_PARENT_PATH` *(optional)* – Separater Unterordner für Akquise-Ordner (Standard: `Internal_FloodWaive/00_Akquise`).
 - `ONEDRIVE_ACQ_BASE_URL` *(optional)* – Fallback-Basis-URL für Akquise-Ordner (Standard: `https://floodwaivede-my.sharepoint.com/personal/hofmann_floodwaive_de/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fhofmann_floodwaive_de%2FDocuments%2FInternal_FloodWaive%2F00_Akquise&viewid=88fe7efd-76fe-444a-a788-50f2f07d09fd&ga=1`).
 
+Die lokalen Vorlagen `projectstructure/` und `acquisitionstructure/` werden beim Docker-Build ins Lambda-Image kopiert (`Dockerfile`), damit der Bot die Ordnerhierarchie automatisch auf OneDrive replizieren kann. Passe die Ordnerstrukturen im Repository an, wenn ihr andere Templates benötigt.
+
 Vorgehen zur Einrichtung:
 
 1. **Azure AD App registrieren** → neue App für OneDrive/SharePoint.
