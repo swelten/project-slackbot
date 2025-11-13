@@ -1,5 +1,7 @@
 import bolt from '@slack/bolt';
 import { Client as NotionClient } from '@notionhq/client';
+import fs from 'fs/promises';
+import path from 'path';
 
 const { App, AwsLambdaReceiver } = bolt;
 
@@ -381,6 +383,7 @@ const recentFilePromptCache = new Map();
 const EVENT_TTL_MS = 1000 * 60 * 5;
 const recentEventCache = new Map();
 const UPLOAD_MARKER_PREFIX = 'Asking for upload...';
+const PROJECT_STRUCTURE_ROOT = path.join(process.cwd(), 'projectstructure');
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
@@ -1304,6 +1307,14 @@ async function ensureOnedriveFolder(folderName, options = {}) {
       parentPath: graphConfig.parentPath,
       token,
     });
+    if (folder?.id) {
+      await replicateProjectStructure({
+        templateRoot: PROJECT_STRUCTURE_ROOT,
+        driveId: graphConfig.driveId,
+        parentItemId: folder.id,
+        token,
+      });
+    }
     const shareUrl = await ensureGraphShareLink({
       driveId: graphConfig.driveId,
       itemId: folder?.id,
@@ -1441,6 +1452,88 @@ async function ensureGraphShareLink({ driveId, itemId, token }) {
 
   const payload = await response.json();
   return payload?.link?.webUrl ?? null;
+}
+
+async function replicateProjectStructure({ templateRoot, driveId, parentItemId, token }) {
+  if (!templateRoot || !driveId || !parentItemId || !token) {
+    return;
+  }
+  let entries;
+  try {
+    entries = await fs.readdir(templateRoot, { withFileTypes: true });
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('Failed to read project structure template', error);
+    }
+    return;
+  }
+  if (!entries.length) {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const childFolder = await ensureChildFolder({
+      driveId,
+      parentItemId,
+      name: entry.name,
+      token,
+    }).catch((error) => {
+      console.warn('Failed to create child folder in project structure', { name: entry.name, error });
+      return null;
+    });
+    if (childFolder?.id) {
+      await replicateProjectStructure({
+        templateRoot: path.join(templateRoot, entry.name),
+        driveId,
+        parentItemId: childFolder.id,
+        token,
+      });
+    }
+  }
+}
+
+async function ensureChildFolder({ driveId, parentItemId, name, token }) {
+  const url = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${parentItemId}/children`;
+  const body = {
+    name,
+    folder: {},
+    '@microsoft.graph.conflictBehavior': 'fail',
+  };
+
+  let response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (response.status === 409) {
+    return findChildFolder({ driveId, parentItemId, name, token });
+  }
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph child-folder request failed (${response.status}): ${details}`);
+  }
+  return response.json();
+}
+
+async function findChildFolder({ driveId, parentItemId, name, token }) {
+  const childrenUrl = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${parentItemId}/children?$select=id,name,folder`;
+  const response = await fetch(childrenUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Graph child-folder lookup failed (${response.status}): ${details}`);
+  }
+  const payload = await response.json();
+  const match = payload.value?.find((item) => item.folder && item.name === name);
+  return match || null;
 }
 
 async function sendQuestion(session, client) {
