@@ -2919,7 +2919,7 @@ function buildFolderSelectData({ folderPaths = [], prefix, channelId, fileId, fi
   const uniquePaths = Array.from(new Set(folderPaths));
   const suggestions = suggestFolderPaths(fileName, uniquePaths);
   const orderedPaths = Array.from(new Set([...suggestions, ...uniquePaths]));
-  const maxOptions = 99;
+  const maxOptions = 49;
   const trimmedPaths = orderedPaths.slice(0, maxOptions);
   const options = [];
   const rootLabel = prefix === 'akq' ? 'Akquise-Hauptordner' : 'Projekt-Hauptordner';
@@ -3162,6 +3162,13 @@ async function getUploadMarkers({ client, channel, threadTs, logger }) {
       cursor = response.response_metadata?.next_cursor;
     } while (cursor);
   } catch (error) {
+    if (error.data?.error === 'thread_not_found') {
+      logger?.debug?.('Thread not found when fetching upload markers, skipping.', {
+        channel,
+        threadTs,
+      });
+      return markers;
+    }
     logger?.warn?.('Failed to fetch upload markers', safeError(error));
   }
   return markers;
