@@ -1929,9 +1929,13 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
           text: { type: 'mrkdwn', text: `${text}\nOrdner: ${channelContext.onedriveUrl}` },
         },
         {
+          type: 'section',
+          text: { type: 'mrkdwn', text: 'Bitte wähle den Zielordner aus:' },
+          accessory: buildFolderSelectElement(folderSelectData),
+        },
+        {
           type: 'actions',
           elements: [
-            buildFolderSelectElement(folderSelectData),
             {
               type: 'button',
               text: { type: 'plain_text', text: 'Ja, bitte hochladen', emoji: true },
@@ -2362,6 +2366,7 @@ function safeError(error) {
     message: error.message,
     status: error.status ?? error.statusCode,
     code: error.code,
+    data: error.data,
   };
   if (error.body) {
     base.body = {
