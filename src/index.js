@@ -164,6 +164,7 @@ const FLOW_CONFIGS = {
     onedriveParentPathEnv: 'ONEDRIVE_PARENT_PATH',
     databaseEnv: 'NOTION_DATABASE_ID',
     placeholderBaseUrlEnv: 'ONEDRIVE_BASE_URL',
+    structureTemplateName: 'projectstructure',
   },
   acquisition: {
     key: 'acquisition',
@@ -195,6 +196,7 @@ const FLOW_CONFIGS = {
     defaultOnedriveParentPath: 'Internal_FloodWaive/00_Akquise',
     defaultPlaceholderBaseUrl:
       'https://floodwaivede-my.sharepoint.com/personal/hofmann_floodwaive_de/_layouts/15/onedrive.aspx?id=%2Fpersonal%2Fhofmann_floodwaive_de%2FDocuments%2FInternal_FloodWaive%2F00_Akquise&viewid=88fe7efd-76fe-444a-a788-50f2f07d09fd&ga=1',
+    structureTemplateName: 'acquisitionstructure',
     variants: {
       customer: {
         variantKey: 'customer',
@@ -250,6 +252,7 @@ const FLOW_CONFIGS = {
         notionProperties: ACQUISITION_NOTION_PROPERTIES,
         databaseEnv: 'NOTION_ACQ_DATABASE_ID',
         contextType: 'acquisition-customer',
+        structureTemplateName: 'acquisitionstructure',
       },
       research: {
         variantKey: 'research',
@@ -365,6 +368,7 @@ const FLOW_CONFIGS = {
         notionProperties: RESEARCH_ACQ_PROPERTIES,
         databaseEnv: 'NOTION_ACQ_RESEARCH_DATABASE_ID',
         contextType: 'acquisition-research',
+        structureTemplateName: 'acquisitionstructure',
       },
     },
   },
@@ -429,7 +433,26 @@ const notion =
     ? new NotionClient({ auth: process.env.NOTION_TOKEN.trim() })
     : null;
 const defaultNotionDatabaseId = sanitizeDatabaseId(process.env.NOTION_DATABASE_ID);
+const defaultAcquisitionDatabaseId = sanitizeDatabaseId(process.env.NOTION_ACQ_DATABASE_ID);
+const defaultResearchAcqDatabaseId = sanitizeDatabaseId(process.env.NOTION_ACQ_RESEARCH_DATABASE_ID);
 let cachedNotionUsers = null;
+
+const CHANNEL_PREFIX_CONFIGS = {
+  [FLOW_CONFIGS.project?.channelPrefix || 'prj']: {
+    family: 'project',
+    prefix: FLOW_CONFIGS.project?.channelPrefix || 'prj',
+    titleProperty: NOTION_PROPERTIES.title,
+    onedriveProperty: NOTION_PROPERTIES.onedrive,
+    getDatabaseIds: () => [defaultNotionDatabaseId].filter(Boolean),
+  },
+  [FLOW_CONFIGS.acquisition?.channelPrefix || 'akq']: {
+    family: 'acquisition',
+    prefix: FLOW_CONFIGS.acquisition?.channelPrefix || 'akq',
+    titleProperty: ACQUISITION_NOTION_PROPERTIES.title,
+    onedriveProperty: ACQUISITION_NOTION_PROPERTIES.onedrive,
+    getDatabaseIds: () => [defaultAcquisitionDatabaseId, defaultResearchAcqDatabaseId].filter(Boolean),
+  },
+};
 
 Object.values(FLOW_CONFIGS).forEach((flowConfig) => {
   registerFlowCommand(flowConfig);
@@ -538,6 +561,7 @@ function buildFlowRuntime(flowConfig) {
   runtime.variants = flowConfig.variants || null;
   runtime.rawConfig = flowConfig;
   runtime.contextType = flowConfig.contextType || flowConfig.key;
+  runtime.structureTemplateRoot = resolveStructureTemplateRoot(flowConfig);
   return runtime;
 }
 
@@ -596,6 +620,13 @@ function resolveDatabaseId(config) {
   const fromEnv = config.databaseEnv && sanitizeDatabaseId(process.env[config.databaseEnv]);
   const fallback = sanitizeDatabaseId(config.databaseId);
   return fromEnv || fallback || defaultNotionDatabaseId || '';
+}
+
+function resolveStructureTemplateRoot(config) {
+  if (!config?.structureTemplateName) {
+    return PROJECT_STRUCTURE_ROOT;
+  }
+  return path.join(process.cwd(), config.structureTemplateName);
 }
 
 app.event('message', async ({ event, client, logger }) => {
@@ -751,6 +782,7 @@ async function createNotionProject(answers, flow) {
   const onedriveUrl = await ensureOnedriveFolder(prefixedTitle, {
     parentPath: flow?.onedriveParentPath,
     baseUrl: flow?.placeholderBaseUrl,
+    structureRoot: flow?.structureTemplateRoot,
   });
 
   let properties = {};
@@ -1308,8 +1340,8 @@ async function ensureOnedriveFolder(folderName, options = {}) {
       token,
     });
     if (folder?.id) {
-      await replicateProjectStructure({
-        templateRoot: PROJECT_STRUCTURE_ROOT,
+      await replicateTemplateStructure({
+        templateRoot: options.structureRoot || PROJECT_STRUCTURE_ROOT,
         driveId: graphConfig.driveId,
         parentItemId: folder.id,
         token,
@@ -1454,7 +1486,7 @@ async function ensureGraphShareLink({ driveId, itemId, token }) {
   return payload?.link?.webUrl ?? null;
 }
 
-async function replicateProjectStructure({ templateRoot, driveId, parentItemId, token }) {
+async function replicateTemplateStructure({ templateRoot, driveId, parentItemId, token }) {
   if (!templateRoot || !driveId || !parentItemId || !token) {
     return;
   }
@@ -1485,7 +1517,7 @@ async function replicateProjectStructure({ templateRoot, driveId, parentItemId, 
       return null;
     });
     if (childFolder?.id) {
-      await replicateProjectStructure({
+      await replicateTemplateStructure({
         templateRoot: path.join(templateRoot, entry.name),
         driveId,
         parentItemId: childFolder.id,
@@ -1998,6 +2030,7 @@ async function finalizeSession(session, client, logger) {
         notionUrl: notionResult?.url,
         notionPageId: notionResult?.pageId || extractNotionPageIdFromUrl(notionResult?.url),
         onedriveUrl: notionResult?.onedriveUrl,
+        prefix: (flow?.channelPrefix || 'prj').toLowerCase(),
       });
     }
 
@@ -2515,7 +2548,11 @@ async function resolveProjectChannelContext(channelId, client, logger) {
   try {
     const info = await client.conversations.info({ channel: channelId });
     const channel = info.channel;
-    if (!channel?.name || !channel.name.startsWith(PROJECT_CHANNEL_PREFIX)) {
+    if (!channel?.name) {
+      return null;
+    }
+    const prefixConfig = getChannelPrefixConfig(channel.name);
+    if (!prefixConfig) {
       return null;
     }
 
@@ -2525,7 +2562,7 @@ async function resolveProjectChannelContext(channelId, client, logger) {
 
     if (pageIdFromMeta) {
       const page = await notion.pages.retrieve({ page_id: pageIdFromMeta });
-      const onedrivePropertyName = NOTION_PROPERTIES.onedrive;
+      const onedrivePropertyName = prefixConfig.onedriveProperty || NOTION_PROPERTIES.onedrive;
       const onedriveUrl = extractOnedriveUrlFromPage(page, onedrivePropertyName);
       if (!onedriveUrl) {
         return null;
@@ -2535,12 +2572,13 @@ async function resolveProjectChannelContext(channelId, client, logger) {
         notionUrl: notionUrlFromMeta || page.url,
         notionPageId: page.id,
         onedriveUrl,
+        prefix: prefixConfig.prefix,
       };
       cacheChannelContext(channelId, context);
       return context;
     }
 
-    const fallbackContext = await findNotionContextForChannel(channel.name, logger);
+    const fallbackContext = await findNotionContextForChannel(channel.name, prefixConfig, logger);
     if (fallbackContext) {
       cacheChannelContext(channelId, fallbackContext);
       logger?.info?.('Resolved channel context via Notion fallback', {
@@ -2604,72 +2642,86 @@ function extractNotionPageIdFromUrl(url) {
   return formatNotionUuid(match[0]);
 }
 
-async function findNotionContextForChannel(channelName, logger) {
-  if (!channelName || !channelName.startsWith(PROJECT_CHANNEL_PREFIX)) {
+async function findNotionContextForChannel(channelName, prefixConfig, logger) {
+  if (!channelName || !prefixConfig) {
     return null;
   }
-  if (!notion || !defaultNotionDatabaseId) {
+  if (!notion) {
+    return null;
+  }
+  const databaseIds = prefixConfig.getDatabaseIds ? prefixConfig.getDatabaseIds() : [];
+  if (!databaseIds.length) {
     return null;
   }
 
-  const channelSlug = extractChannelSlug(channelName);
+  const channelSlug = extractChannelSlug(channelName, prefixConfig.prefix);
   if (!channelSlug) {
     return null;
   }
 
-  let cursor;
-  do {
-    const response = await notion.databases.query({
-      database_id: defaultNotionDatabaseId,
-      start_cursor: cursor,
-      page_size: 50,
-      sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
-    });
+  const onedrivePropertyName = prefixConfig.onedriveProperty || NOTION_PROPERTIES.onedrive;
+  const titlePropertyName = prefixConfig.titleProperty || NOTION_PROPERTIES.title;
 
-    for (const page of response.results) {
-      const pageSlug = deriveChannelSlugFromPage(page);
-      if (!pageSlug || pageSlug !== channelSlug) {
-        continue;
-      }
-      const onedriveUrl = extractOnedriveUrlFromPage(page, NOTION_PROPERTIES.onedrive);
-      if (!onedriveUrl) {
-        continue;
-      }
-      logger?.debug?.('Matched channel to Notion page via fallback lookup', {
-        channelName,
-        notionPageId: page.id,
-      });
-      return {
-        channelName,
-        notionUrl: page.url,
-        notionPageId: page.id,
-        onedriveUrl,
-      };
+  for (const databaseId of databaseIds) {
+    if (!databaseId) {
+      continue;
     }
 
-    cursor = response.has_more ? response.next_cursor : undefined;
-  } while (cursor);
+    let cursor;
+    do {
+      const response = await notion.databases.query({
+        database_id: databaseId,
+        start_cursor: cursor,
+        page_size: 50,
+        sorts: [{ timestamp: 'last_edited_time', direction: 'descending' }],
+      });
+
+      for (const page of response.results) {
+        const pageSlug = deriveChannelSlugFromPage(page, titlePropertyName);
+        if (!pageSlug || pageSlug !== channelSlug) {
+          continue;
+        }
+        const onedriveUrl = extractOnedriveUrlFromPage(page, onedrivePropertyName);
+        if (!onedriveUrl) {
+          continue;
+        }
+        logger?.debug?.('Matched channel to Notion page via fallback lookup', {
+          channelName,
+          notionPageId: page.id,
+        });
+        return {
+          channelName,
+          notionUrl: page.url,
+          notionPageId: page.id,
+          onedriveUrl,
+          prefix: prefixConfig.prefix,
+        };
+      }
+
+      cursor = response.has_more ? response.next_cursor : undefined;
+    } while (cursor);
+  }
 
   return null;
 }
 
-function extractChannelSlug(channelName) {
-  if (!channelName) {
+function extractChannelSlug(channelName, prefix) {
+  if (!channelName || !prefix) {
     return '';
   }
   const normalized = channelName.trim().toLowerCase();
-  const prefix = `${PROJECT_CHANNEL_PREFIX}_`;
-  if (!normalized.startsWith(prefix)) {
+  const normalizedPrefix = `${prefix.toLowerCase()}_`;
+  if (!normalized.startsWith(normalizedPrefix)) {
     return '';
   }
-  return buildChannelSlug(normalized.slice(prefix.length));
+  return buildChannelSlug(normalized.slice(normalizedPrefix.length));
 }
 
-function deriveChannelSlugFromPage(page) {
-  if (!page?.properties) {
+function deriveChannelSlugFromPage(page, titlePropertyName) {
+  if (!page?.properties || !titlePropertyName) {
     return '';
   }
-  const titleProperty = page.properties[NOTION_PROPERTIES.title];
+  const titleProperty = page.properties[titlePropertyName];
   if (!titleProperty || titleProperty.type !== 'title') {
     return '';
   }
@@ -2797,6 +2849,25 @@ function pruneCache(map) {
       map.delete(key);
     }
   }
+}
+
+function getChannelPrefix(channelName) {
+  if (!channelName) {
+    return '';
+  }
+  const match = channelName.match(/^([a-z0-9]+)_/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+function getChannelPrefixConfig(channelNameOrPrefix) {
+  if (!channelNameOrPrefix) {
+    return null;
+  }
+  const prefix =
+    channelNameOrPrefix.includes('_') || channelNameOrPrefix.includes('-')
+      ? getChannelPrefix(channelNameOrPrefix)
+      : channelNameOrPrefix.toLowerCase();
+  return CHANNEL_PREFIX_CONFIGS[prefix] || null;
 }
 
 async function getUploadMarkers({ client, channel, threadTs, logger }) {
