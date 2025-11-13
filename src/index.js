@@ -377,6 +377,7 @@ const FLOW_CONFIGS = {
 const PROJECT_CHANNEL_PREFIX = FLOW_CONFIGS.project?.channelPrefix || 'prj';
 const ONEDRIVE_UPLOAD_APPROVE_ACTION = 'approve_onedrive_upload';
 const ONEDRIVE_UPLOAD_DECLINE_ACTION = 'decline_onedrive_upload';
+const ONEDRIVE_SELECT_FOLDER_ACTION = 'select_onedrive_folder';
 const SIMPLE_UPLOAD_LIMIT = 4 * 1024 * 1024; // 4 MB
 const UPLOAD_CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
 const processedFileUploads = new Set();
@@ -388,6 +389,9 @@ const EVENT_TTL_MS = 1000 * 60 * 5;
 const recentEventCache = new Map();
 const UPLOAD_MARKER_PREFIX = 'Asking for upload...';
 const PROJECT_STRUCTURE_ROOT = path.join(process.cwd(), 'projectstructure');
+const ACQUISITION_STRUCTURE_ROOT = path.join(process.cwd(), 'acquisitionstructure');
+const templateFolderCache = new Map();
+const uploadFolderSelections = new Map();
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
@@ -626,6 +630,12 @@ function resolveStructureTemplateRoot(config) {
   if (!config?.structureTemplateName) {
     return PROJECT_STRUCTURE_ROOT;
   }
+  if (config.structureTemplateName === 'acquisitionstructure') {
+    return ACQUISITION_STRUCTURE_ROOT;
+  }
+  if (config.structureTemplateName === 'projectstructure') {
+    return PROJECT_STRUCTURE_ROOT;
+  }
   return path.join(process.cwd(), config.structureTemplateName);
 }
 
@@ -751,12 +761,29 @@ app.action(ONEDRIVE_UPLOAD_APPROVE_ACTION, async ({ ack, body, action, client, l
   }
 });
 
+app.action(ONEDRIVE_SELECT_FOLDER_ACTION, async ({ ack, body, action, logger }) => {
+  await ack();
+  const option = action?.selected_option;
+  const payload = decodeActionValue(option?.value);
+  if (!payload) {
+    return;
+  }
+  const key = buildUploadSelectionKey(payload.channelId, payload.fileId);
+  uploadFolderSelections.set(key, payload.folderPath || '/');
+  logger?.debug?.('Updated upload folder selection', {
+    channelId: payload.channelId,
+    fileId: payload.fileId,
+    folderPath: payload.folderPath,
+  });
+});
+
 app.action(ONEDRIVE_UPLOAD_DECLINE_ACTION, async ({ ack, body, action, client }) => {
   await ack();
   const payload = decodeActionValue(action?.value);
   if (!payload) {
     return;
   }
+  clearUploadFolderSelection(payload.channelId, payload.fileId);
   await postEphemeralSafe(client, payload.channelId, body.user?.id, {
     text: 'Alles klar, ich lade die Datei nicht nach OneDrive hoch.',
     thread_ts: payload.messageTs,
@@ -1830,6 +1857,10 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
       files: event.files.map((file) => ({ id: file.id, name: file.name, mimetype: file.mimetype })),
     });
 
+    const channelPrefix = channelContext.prefix || 'prj';
+    const structureRoot = channelContext.structureRoot || getStructureRootForPrefix(channelPrefix);
+    const templateFolders = await getTemplateFolderPaths(structureRoot);
+
     for (const file of event.files) {
       if (!file?.id) {
         continue;
@@ -1871,6 +1902,16 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         }
       }
 
+      const folderSelectData = buildFolderSelectData({
+        folderPaths: templateFolders,
+        prefix: channelPrefix,
+        channelId: event.channel,
+        fileId: file.id,
+        fileName: fileLabel,
+      });
+      const defaultFolderPath = folderSelectData.defaultFolderPath || '/';
+      setInitialFolderSelection(event.channel, file.id, defaultFolderPath);
+
       const value = encodeActionValue({
         channelId: event.channel,
         fileId: file.id,
@@ -1878,6 +1919,7 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         onedriveUrl: channelContext.onedriveUrl,
         notionPageId: channelContext.notionPageId,
         fileName: fileLabel,
+        defaultFolderPath,
       });
 
       const text = `Ich habe die Datei *${fileLabel}* gesehen. Soll ich sie im OneDrive-Ordner dieses Projekts speichern?`;
@@ -1889,6 +1931,7 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         {
           type: 'actions',
           elements: [
+            buildFolderSelectElement(folderSelectData),
             {
               type: 'button',
               text: { type: 'plain_text', text: 'Ja, bitte hochladen', emoji: true },
@@ -2031,6 +2074,7 @@ async function finalizeSession(session, client, logger) {
         notionPageId: notionResult?.pageId || extractNotionPageIdFromUrl(notionResult?.url),
         onedriveUrl: notionResult?.onedriveUrl,
         prefix: (flow?.channelPrefix || 'prj').toLowerCase(),
+        structureRoot: flow?.structureTemplateRoot || getStructureRootForPrefix(flow?.channelPrefix || 'prj'),
       });
     }
 
@@ -2355,10 +2399,12 @@ async function handleOnedriveUploadApproval({ payload, client, logger, userId })
 
   const slackFile = await fetchSlackFileInfo(client, fileId);
   const downloadBuffer = await downloadSlackFile(slackFile);
+  const selectedFolderPath = getSelectedFolderPath(channelId, fileId) || payload.defaultFolderPath || '/';
   const uploadResult = await uploadBufferToOnedrive({
     buffer: downloadBuffer,
     fileName: slackFile.name || slackFile.title || fileName || 'Upload',
     folderUrl: onedriveUrl,
+    folderPath: selectedFolderPath,
     logger,
   });
 
@@ -2383,6 +2429,8 @@ async function handleOnedriveUploadApproval({ payload, client, logger, userId })
       logger?.warn?.('Failed to post OneDrive upload confirmation in thread', error);
     }
   }
+
+  clearUploadFolderSelection(channelId, fileId);
 }
 
 async function fetchSlackFileInfo(client, fileId) {
@@ -2408,7 +2456,7 @@ async function downloadSlackFile(file) {
   return Buffer.from(await response.arrayBuffer());
 }
 
-async function uploadBufferToOnedrive({ buffer, fileName, folderUrl, logger }) {
+async function uploadBufferToOnedrive({ buffer, fileName, folderUrl, folderPath, logger }) {
   if (!buffer?.length || !fileName || !folderUrl) {
     throw new Error('Missing upload parameters');
   }
@@ -2418,16 +2466,23 @@ async function uploadBufferToOnedrive({ buffer, fileName, folderUrl, logger }) {
   const folderInfo = await resolveDriveItemFromShareLink(folderUrl, token);
   const envDriveId = graphConfig.driveId;
   const driveId = folderInfo?.parentReference?.driveId || envDriveId;
-  const folderId = folderInfo?.id;
-  if (!driveId || !folderId) {
+  const rootFolderId = folderInfo?.id;
+  if (!driveId || !rootFolderId) {
     throw new Error('Konnte den OneDrive-Ordner nicht aus dem Link bestimmen.');
   }
 
+  const targetFolderId = await resolveTargetFolderId({
+    driveId,
+    rootFolderId,
+    folderPath,
+    token,
+  });
+
   const safeName = sanitizeFilename(fileName);
   if (buffer.length <= SIMPLE_UPLOAD_LIMIT) {
-    return simpleGraphUpload({ buffer, driveId, folderId, fileName: safeName, token });
+    return simpleGraphUpload({ buffer, driveId, folderId: targetFolderId, fileName: safeName, token });
   }
-  return chunkedGraphUpload({ buffer, driveId, folderId, fileName: safeName, token, logger });
+  return chunkedGraphUpload({ buffer, driveId, folderId: targetFolderId, fileName: safeName, token, logger });
 }
 
 async function simpleGraphUpload({ buffer, driveId, folderId, fileName, token }) {
@@ -2502,6 +2557,24 @@ async function chunkedGraphUpload({ buffer, driveId, folderId, fileName, token, 
   return null;
 }
 
+async function resolveTargetFolderId({ driveId, rootFolderId, folderPath, token }) {
+  if (!folderPath || folderPath === '/' || !folderPath.trim()) {
+    return rootFolderId;
+  }
+  const segments = folderPath.split('/').map((segment) => segment.trim()).filter(Boolean);
+  let currentId = rootFolderId;
+  for (const segment of segments) {
+    const child = await ensureChildFolder({
+      driveId,
+      parentItemId: currentId,
+      name: segment,
+      token,
+    });
+    currentId = child?.id || currentId;
+  }
+  return currentId;
+}
+
 async function resolveDriveItemFromShareLink(shareUrl, token) {
   if (!shareUrl) {
     throw new Error('Share link missing');
@@ -2573,6 +2646,7 @@ async function resolveProjectChannelContext(channelId, client, logger) {
         notionPageId: page.id,
         onedriveUrl,
         prefix: prefixConfig.prefix,
+        structureRoot: getStructureRootForPrefix(prefixConfig.prefix),
       };
       cacheChannelContext(channelId, context);
       return context;
@@ -2695,6 +2769,7 @@ async function findNotionContextForChannel(channelName, prefixConfig, logger) {
           notionPageId: page.id,
           onedriveUrl,
           prefix: prefixConfig.prefix,
+          structureRoot: getStructureRootForPrefix(prefixConfig.prefix),
         };
       }
 
@@ -2777,6 +2852,192 @@ async function postEphemeralSafe(client, channel, user, message) {
   } catch (error) {
     console.warn('Failed to post ephemeral message', safeError(error));
   }
+}
+
+function buildUploadSelectionKey(channelId, fileId) {
+  return `${channelId || ''}:${fileId || ''}`;
+}
+
+function setInitialFolderSelection(channelId, fileId, folderPath) {
+  const key = buildUploadSelectionKey(channelId, fileId);
+  if (!uploadFolderSelections.has(key)) {
+    uploadFolderSelections.set(key, folderPath || '/');
+  }
+}
+
+function getSelectedFolderPath(channelId, fileId) {
+  return uploadFolderSelections.get(buildUploadSelectionKey(channelId, fileId));
+}
+
+function clearUploadFolderSelection(channelId, fileId) {
+  uploadFolderSelections.delete(buildUploadSelectionKey(channelId, fileId));
+}
+
+function getStructureRootForPrefix(prefix) {
+  return prefix === 'akq' ? ACQUISITION_STRUCTURE_ROOT : PROJECT_STRUCTURE_ROOT;
+}
+
+async function getTemplateFolderPaths(structureRoot) {
+  if (!structureRoot) {
+    return [];
+  }
+  if (templateFolderCache.has(structureRoot)) {
+    return templateFolderCache.get(structureRoot);
+  }
+  const folders = [];
+  async function walk(current, relParts = []) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        console.warn('Failed to read structure template', { current, error });
+      }
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const nextParts = [...relParts, entry.name];
+      folders.push(nextParts.join('/'));
+      await walk(path.join(current, entry.name), nextParts);
+    }
+  }
+  await walk(structureRoot, []);
+  templateFolderCache.set(structureRoot, folders);
+  return folders;
+}
+
+function buildFolderSelectData({ folderPaths = [], prefix, channelId, fileId, fileName }) {
+  const uniquePaths = Array.from(new Set(folderPaths));
+  const suggestions = suggestFolderPaths(fileName, uniquePaths);
+  const orderedPaths = Array.from(new Set([...suggestions, ...uniquePaths]));
+  const maxOptions = 99;
+  const trimmedPaths = orderedPaths.slice(0, maxOptions);
+  const options = [];
+  const rootLabel = prefix === 'akq' ? 'Akquise-Hauptordner' : 'Projekt-Hauptordner';
+  options.push(buildFolderOption('/', rootLabel, channelId, fileId));
+  for (const relPath of trimmedPaths) {
+    options.push(buildFolderOption(relPath, formatFolderLabel(relPath), channelId, fileId));
+  }
+  const defaultFolderPath = suggestions[0] || '/';
+  const initialOption =
+    options.find((option) => {
+      const payload = decodeActionValue(option.value);
+      return payload?.folderPath === defaultFolderPath;
+    }) || options[0];
+  return {
+    options,
+    defaultFolderPath,
+    initialOption,
+  };
+}
+
+function buildFolderOption(folderPath, label, channelId, fileId) {
+  return {
+    text: { type: 'plain_text', text: label.slice(0, 75), emoji: true },
+    value: encodeActionValue({
+      channelId,
+      fileId,
+      folderPath,
+    }),
+  };
+}
+
+function buildFolderSelectElement(data) {
+  return {
+    type: 'static_select',
+    action_id: ONEDRIVE_SELECT_FOLDER_ACTION,
+    placeholder: { type: 'plain_text', text: 'Zielordner wählen', emoji: true },
+    options: data.options,
+    initial_option: data.initialOption,
+  };
+}
+
+function formatFolderLabel(folderPath) {
+  if (!folderPath || folderPath === '/') {
+    return 'Hauptordner';
+  }
+  const segments = folderPath.split('/').map(stripOrderingPrefix);
+  return segments.join(' / ');
+}
+
+function stripOrderingPrefix(name) {
+  return name.replace(/^\d+[_-]?/, '').replace(/_/g, ' ').trim() || name;
+}
+
+function suggestFolderPaths(fileName = '', folderPaths = []) {
+  const tokens = tokenize(fileName);
+  if (!tokens.length) {
+    return [];
+  }
+  const keywordScores = buildKeywordScoreMap(tokens, folderPaths);
+  const scored = folderPaths.map((path) => {
+    const score = scoreFolderPathWithTokens(path, tokens) + (keywordScores.get(path) || 0);
+    return { path, score };
+  });
+  const positives = scored.filter((item) => item.score > 0);
+  positives.sort((a, b) => b.score - a.score);
+  return positives.slice(0, 3).map((item) => item.path);
+}
+
+function tokenize(text) {
+  return (text || '')
+    .toLowerCase()
+    .split(/[^a-z0-9äöüß]+/i)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function scoreFolderPathWithTokens(folderPath, tokens) {
+  const segments = folderPath.split('/');
+  let score = 0;
+  segments.forEach((segment, index) => {
+    const clean = stripOrderingPrefix(segment).toLowerCase();
+    const segmentTokens = tokenize(clean);
+    for (const token of tokens) {
+      if (segmentTokens.includes(token)) {
+        score += index === 0 ? 3 : 2;
+      }
+    }
+  });
+  const adjusted = score - segments.length * 0.05;
+  return adjusted > 0 ? adjusted : 0;
+}
+
+const FOLDER_KEYWORD_HINTS = {
+  proposal: ['02_Sales_Process/02_Proposals/Final', '05_Research_Proposals/02_Concepts'],
+  angebot: ['02_Sales_Process/02_Proposals/Drafts'],
+  contract: ['02_Sales_Process/03_Contracts/Signed'],
+  vertrag: ['02_Sales_Process/03_Contracts/Signed'],
+  invoice: ['01_Intake/04_Budget_Approvals'],
+  rechnung: ['01_Intake/04_Budget_Approvals'],
+  nda: ['01_Intake/02_NDA'],
+  budget: ['01_Intake/04_Budget_Approvals', '03_Operations_Enablement/02_Estimations'],
+  meeting: ['02_Sales_Process/01_Discovery_Meetings/YYYYMMDD_Topic/Notes'],
+  workshop: ['04_Communication/02_Workshops_Webinars'],
+  marketing: ['04_Communication/03_Marketing_Material'],
+  submission: ['05_Research_Proposals/04_Submissions'],
+  partner: ['05_Research_Proposals/03_Partner_Documents'],
+};
+
+function buildKeywordScoreMap(tokens, folderPaths) {
+  const scores = new Map();
+  const set = new Set(folderPaths);
+  for (const token of tokens) {
+    const hints = FOLDER_KEYWORD_HINTS[token];
+    if (!hints) {
+      continue;
+    }
+    for (const path of hints) {
+      if (set.has(path)) {
+        scores.set(path, (scores.get(path) || 0) + 5);
+      }
+    }
+  }
+  return scores;
 }
 
 function cacheChannelContext(channelId, context) {
