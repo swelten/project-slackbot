@@ -380,6 +380,7 @@ const FILE_PROMPT_TTL_MS = 1000 * 60 * 5; // 5 minutes
 const recentFilePromptCache = new Map();
 const EVENT_TTL_MS = 1000 * 60 * 5;
 const recentEventCache = new Map();
+const UPLOAD_MARKER_PREFIX = 'Asking for upload...';
 
 const DEFAULT_PROJECT_CHANNEL_MEMBERS = ['U04E6N323DY', 'U04E04A07T8', 'U08FKS4CT55']; // Julian, Adrian & extra member
 const rawProjectMembers =
@@ -1679,6 +1680,25 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
       return;
     }
 
+    const threadAnchor = event.thread_ts || event.ts;
+    let existingMarkers = null;
+    const ensureMarkerSet = async () => {
+      if (existingMarkers) {
+        return existingMarkers;
+      }
+      if (!threadAnchor) {
+        existingMarkers = new Set();
+        return existingMarkers;
+      }
+      existingMarkers = await getUploadMarkers({
+        client,
+        channel: event.channel,
+        threadTs: threadAnchor,
+        logger,
+      });
+      return existingMarkers;
+    };
+
     logger?.info?.('Preparing OneDrive upload prompt', {
       channel: event.channel,
       user: event.user,
@@ -1707,6 +1727,24 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         continue;
       }
       rememberPrompt(promptKey);
+
+      if (threadAnchor) {
+        const markers = await ensureMarkerSet();
+        if (markers.has(file.id)) {
+          logger?.info?.('Upload marker already exists, skipping prompt', { fileId: file.id });
+          continue;
+        }
+        const markerPosted = await postUploadMarker({
+          client,
+          channel: event.channel,
+          threadTs: threadAnchor,
+          fileId: file.id,
+          logger,
+        });
+        if (markerPosted) {
+          markers.add(file.id);
+        }
+      }
 
       const value = encodeActionValue({
         channelId: event.channel,
@@ -2666,6 +2704,58 @@ function pruneCache(map) {
       map.delete(key);
     }
   }
+}
+
+async function getUploadMarkers({ client, channel, threadTs, logger }) {
+  const markers = new Set();
+  if (!client || !channel || !threadTs) {
+    return markers;
+  }
+  try {
+    let cursor;
+    do {
+      const response = await client.conversations.replies({
+        channel,
+        ts: threadTs,
+        cursor,
+        limit: 200,
+      });
+      for (const message of response.messages || []) {
+        const text = message.text || '';
+        if (text.startsWith(UPLOAD_MARKER_PREFIX)) {
+          const match = text.match(/\(([^)]+)\)\s*$/);
+          if (match?.[1]) {
+            markers.add(match[1]);
+          }
+        }
+      }
+      cursor = response.response_metadata?.next_cursor;
+    } while (cursor);
+  } catch (error) {
+    logger?.warn?.('Failed to fetch upload markers', safeError(error));
+  }
+  return markers;
+}
+
+async function postUploadMarker({ client, channel, threadTs, fileId, logger }) {
+  if (!client || !channel || !threadTs) {
+    return false;
+  }
+  try {
+    await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: buildUploadMarkerText(fileId),
+    });
+    return true;
+  } catch (error) {
+    logger?.warn?.('Failed to post upload marker', safeError(error));
+    return false;
+  }
+}
+
+function buildUploadMarkerText(fileId) {
+  return fileId ? `${UPLOAD_MARKER_PREFIX} (${fileId})` : UPLOAD_MARKER_PREFIX;
 }
 
 export const handler = async (event, context, callback) => {
