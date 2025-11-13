@@ -763,17 +763,21 @@ app.action(ONEDRIVE_UPLOAD_APPROVE_ACTION, async ({ ack, body, action, client, l
 
 app.action(ONEDRIVE_SELECT_FOLDER_ACTION, async ({ ack, body, action, logger }) => {
   await ack();
-  const option = action?.selected_option;
-  const payload = decodeActionValue(option?.value);
-  if (!payload) {
+  const optionValue = action?.selected_option?.value;
+  if (!optionValue) {
     return;
   }
-  const key = buildUploadSelectionKey(payload.channelId, payload.fileId);
-  uploadFolderSelections.set(key, payload.folderPath || '/');
+  const channelId = body.channel?.id || body.container?.channel_id;
+  const blockId = action?.block_id || '';
+  const fileId = blockId.startsWith('folder_select_') ? blockId.replace('folder_select_', '') : blockId;
+  if (!channelId || !fileId) {
+    return;
+  }
+  setFolderSelection(channelId, fileId, optionValue);
   logger?.debug?.('Updated upload folder selection', {
-    channelId: payload.channelId,
-    fileId: payload.fileId,
-    folderPath: payload.folderPath,
+    channelId,
+    fileId,
+    folderPath: optionValue,
   });
 });
 
@@ -1931,7 +1935,7 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         {
           type: 'section',
           text: { type: 'mrkdwn', text: 'Bitte wähle den Zielordner aus:' },
-          accessory: buildFolderSelectElement(folderSelectData),
+          accessory: buildFolderSelectElement(folderSelectData, file.id),
         },
         {
           type: 'actions',
@@ -2870,6 +2874,10 @@ function setInitialFolderSelection(channelId, fileId, folderPath) {
   }
 }
 
+function setFolderSelection(channelId, fileId, folderPath) {
+  uploadFolderSelections.set(buildUploadSelectionKey(channelId, fileId), folderPath || '/');
+}
+
 function getSelectedFolderPath(channelId, fileId) {
   return uploadFolderSelections.get(buildUploadSelectionKey(channelId, fileId));
 }
@@ -2943,21 +2951,18 @@ function buildFolderSelectData({ folderPaths = [], prefix, channelId, fileId, fi
 function buildFolderOption(folderPath, label, channelId, fileId) {
   return {
     text: { type: 'plain_text', text: label.slice(0, 75), emoji: true },
-    value: encodeActionValue({
-      channelId,
-      fileId,
-      folderPath,
-    }),
+    value: folderPath || '/',
   };
 }
 
-function buildFolderSelectElement(data) {
+function buildFolderSelectElement(data, fileId) {
   return {
     type: 'static_select',
     action_id: ONEDRIVE_SELECT_FOLDER_ACTION,
     placeholder: { type: 'plain_text', text: 'Zielordner wählen', emoji: true },
     options: data.options,
     initial_option: data.initialOption,
+    block_id: `folder_select_${fileId}`,
   };
 }
 
