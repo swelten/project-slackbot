@@ -769,7 +769,7 @@ app.action(ONEDRIVE_SELECT_FOLDER_ACTION, async ({ ack, body, action, logger }) 
   }
   const channelId = body.channel?.id || body.container?.channel_id;
   const blockId = action?.block_id || '';
-  const fileId = blockId.startsWith('folder_select_') ? blockId.replace('folder_select_', '') : blockId;
+  const fileId = blockId.startsWith('folder_select_') ? blockId.replace('folder_select_', '') : '';
   if (!channelId || !fileId) {
     return;
   }
@@ -1934,8 +1934,9 @@ async function handleFileShareEvent({ event, client, logger, eventId }) {
         },
         {
           type: 'section',
+          block_id: `folder_select_${file.id}`,
           text: { type: 'mrkdwn', text: 'Bitte wähle den Zielordner aus:' },
-          accessory: buildFolderSelectElement(folderSelectData, file.id),
+          accessory: buildFolderSelectElement(folderSelectData),
         },
         {
           type: 'actions',
@@ -2955,14 +2956,13 @@ function buildFolderOption(folderPath, label, channelId, fileId) {
   };
 }
 
-function buildFolderSelectElement(data, fileId) {
+function buildFolderSelectElement(data) {
   return {
     type: 'static_select',
     action_id: ONEDRIVE_SELECT_FOLDER_ACTION,
     placeholder: { type: 'plain_text', text: 'Zielordner wählen', emoji: true },
     options: data.options,
     initial_option: data.initialOption,
-    block_id: `folder_select_${fileId}`,
   };
 }
 
