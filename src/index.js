@@ -3018,19 +3018,19 @@ function scoreFolderPathWithTokens(folderPath, tokens) {
 }
 
 const FOLDER_KEYWORD_HINTS = {
-  proposal: ['02_Sales_Process/02_Proposals/Final', '05_Research_Proposals/02_Concepts'],
-  angebot: ['02_Sales_Process/02_Proposals/Drafts'],
-  contract: ['02_Sales_Process/03_Contracts/Signed'],
-  vertrag: ['02_Sales_Process/03_Contracts/Signed'],
-  invoice: ['01_Intake/04_Budget_Approvals'],
-  rechnung: ['01_Intake/04_Budget_Approvals'],
-  nda: ['01_Intake/02_NDA'],
-  budget: ['01_Intake/04_Budget_Approvals', '03_Operations_Enablement/02_Estimations'],
-  meeting: ['02_Sales_Process/01_Discovery_Meetings/YYYYMMDD_Topic/Notes'],
-  workshop: ['04_Communication/02_Workshops_Webinars'],
-  marketing: ['04_Communication/03_Marketing_Material'],
-  submission: ['05_Research_Proposals/04_Submissions'],
-  partner: ['05_Research_Proposals/03_Partner_Documents'],
+  proposal: ['03_Proposals_and_Concepts/Final_Sent', '03_Proposals_and_Concepts/Drafts'],
+  angebot: ['03_Proposals_and_Concepts/Drafts', '03_Proposals_and_Concepts/Final_Sent'],
+  contract: ['01_Admin_and_Contracts/Signed_Contracts'],
+  vertrag: ['01_Admin_and_Contracts/Signed_Contracts'],
+  invoice: ['01_Admin_and_Contracts'],
+  rechnung: ['01_Admin_and_Contracts'],
+  nda: ['01_Admin_and_Contracts/NDA'],
+  budget: ['01_Admin_and_Contracts'],
+  meeting: ['02_Input_and_Data/Notes_and_Meetings'],
+  workshop: ['04_Communication/Mails_and_Updates'],
+  marketing: ['04_Communication/Mails_and_Updates'],
+  submission: ['03_Proposals_and_Concepts/Final_Sent'],
+  partner: ['02_Input_and_Data/Client_Files'],
 };
 
 function buildKeywordScoreMap(tokens, folderPaths) {
